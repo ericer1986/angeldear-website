@@ -1,0 +1,40 @@
+import { Product } from "@/types/product";
+
+export const products: Product[] = [
+  {
+    id: 1,
+    name: "Angel Baby Bottle",
+    sku: "AD001",
+    brand: "Angel Dear",
+    category: "Feeding",
+    price: 89,
+    image: "/images/products/bottle.jpg",
+    description: "Premium BPA-Free Baby Bottle",
+    stock: 100,
+    featured: true,
+  },
+  {
+    id: 2,
+    name: "Electric Breast Pump",
+    sku: "AD002",
+    brand: "Angel Dear",
+    category: "Breast Pump",
+    price: 399,
+    image: "/images/products/pump.jpg",
+    description: "Portable Electric Breast Pump",
+    stock: 50,
+    featured: true,
+  },
+  {
+    id: 3,
+    name: "Baby Carrier",
+    sku: "AD003",
+    brand: "Angel Dear",
+    category: "Carrier",
+    price: 169,
+    image: "/images/products/carrier.jpg",
+    description: "Comfort Baby Carrier",
+    stock: 30,
+    featured: true,
+  },
+];
