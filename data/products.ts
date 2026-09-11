@@ -2,8 +2,9 @@ import { Product } from "@/types/product";
 
 export const products: Product[] = [
   {
-    id: 1,
+    id: "1",
     name: "Angel Baby Bottle",
+    slug: "angel-baby-bottle",
     sku: "AD001",
     brand: "Angel Dear",
     category: "Feeding",
@@ -14,8 +15,9 @@ export const products: Product[] = [
     featured: true,
   },
   {
-    id: 2,
+    id: "2",
     name: "Electric Breast Pump",
+    slug: "electric-breast-pump",
     sku: "AD002",
     brand: "Angel Dear",
     category: "Breast Pump",
@@ -26,8 +28,9 @@ export const products: Product[] = [
     featured: true,
   },
   {
-    id: 3,
+    id: "3",
     name: "Baby Carrier",
+    slug: "baby-carrier",
     sku: "AD003",
     brand: "Angel Dear",
     category: "Carrier",
