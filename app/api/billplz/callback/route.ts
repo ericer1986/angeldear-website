@@ -8,21 +8,28 @@ function verifyBillplzSignature(
   xSignatureKey: string
 ) {
   /*
-    Billplz X Signature format:
+    Billplz X Signature:
 
     1. Remove x_signature
-    2. Sort keys ascending, case-insensitive
-    3. Join key + value
-    4. Separate each pair using |
-    5. HMAC-SHA256
+    2. Construct key + value strings
+    3. Sort the constructed strings ascending,
+       case-insensitive
+    4. Join using |
+    5. HMAC-SHA256 with X Signature Key
   */
 
   const sourceString = Object.entries(params)
-    .filter(([key]) => key !== "x_signature")
-    .sort(([a], [b]) =>
-      a.toLowerCase().localeCompare(b.toLowerCase())
-    )
+    .filter(([key]) => key.toLowerCase() !== "x_signature")
     .map(([key, value]) => `${key}${value}`)
+    .sort((a, b) => {
+      const lowerA = a.toLowerCase();
+      const lowerB = b.toLowerCase();
+
+      if (lowerA < lowerB) return -1;
+      if (lowerA > lowerB) return 1;
+
+      return 0;
+    })
     .join("|");
 
   const generatedSignature = crypto
@@ -30,23 +37,17 @@ function verifyBillplzSignature(
     .update(sourceString)
     .digest("hex");
 
-  /*
-    timingSafeEqual avoids timing attacks
-  */
   const receivedBuffer = Buffer.from(
-    receivedSignature,
+    receivedSignature.toLowerCase(),
     "utf8"
   );
 
   const generatedBuffer = Buffer.from(
-    generatedSignature,
+    generatedSignature.toLowerCase(),
     "utf8"
   );
 
-  if (
-    receivedBuffer.length !==
-    generatedBuffer.length
-  ) {
+  if (receivedBuffer.length !== generatedBuffer.length) {
     return false;
   }
 
@@ -56,43 +57,36 @@ function verifyBillplzSignature(
   );
 }
 
-export async function POST(
-  request: Request
-) {
+export async function POST(request: Request) {
   try {
     /*
-      1. Read Billplz callback body
+      Read Billplz callback
     */
-    const formData =
-      await request.formData();
+    const formData = await request.formData();
 
-    const params: Record<
-      string,
-      string
-    > = {};
+    const params: Record<string, string> = {};
 
-    for (
-      const [key, value]
-      of formData.entries()
-    ) {
-      params[key] =
-        String(value);
+    for (const [key, value] of formData.entries()) {
+      params[key] = String(value);
     }
 
-    console.log(
-      "Billplz Callback:",
-      params
-    );
+    /*
+      Do not log secret signatures
+    */
+    console.log("Billplz callback received:", {
+      id: params.id,
+      paid: params.paid,
+      state: params.state,
+      paid_at: params.paid_at,
+    });
 
     /*
-      2. Get X Signature
+      Get X Signature
     */
-    const receivedSignature =
-      params.x_signature;
+    const receivedSignature = params.x_signature;
 
     const xSignatureKey =
-      process.env
-        .BILLPLZ_X_SIGNATURE_KEY;
+      process.env.BILLPLZ_X_SIGNATURE_KEY;
 
     if (!xSignatureKey) {
       console.error(
@@ -101,8 +95,7 @@ export async function POST(
 
       return NextResponse.json(
         {
-          error:
-            "X Signature configuration missing",
+          error: "X Signature configuration missing",
         },
         {
           status: 500,
@@ -117,8 +110,7 @@ export async function POST(
 
       return NextResponse.json(
         {
-          error:
-            "Missing X Signature",
+          error: "Missing X Signature",
         },
         {
           status: 400,
@@ -127,7 +119,7 @@ export async function POST(
     }
 
     /*
-      3. Verify signature
+      Verify callback authenticity
     */
     const isValidSignature =
       verifyBillplzSignature(
@@ -143,8 +135,7 @@ export async function POST(
 
       return NextResponse.json(
         {
-          error:
-            "Invalid X Signature",
+          error: "Invalid X Signature",
         },
         {
           status: 401,
@@ -152,26 +143,22 @@ export async function POST(
       );
     }
 
+    console.log(
+      "Billplz X Signature verified"
+    );
+
     /*
-      4. Read payment information
+      Payment information
     */
-    const billId =
-      params.id;
-
-    const paid =
-      params.paid;
-
-    const state =
-      params.state;
-
-    const paidAt =
-      params.paid_at;
+    const billId = params.id;
+    const paid = params.paid;
+    const state = params.state;
+    const paidAt = params.paid_at;
 
     if (!billId) {
       return NextResponse.json(
         {
-          error:
-            "Missing Bill ID",
+          error: "Missing Bill ID",
         },
         {
           status: 400,
@@ -180,30 +167,30 @@ export async function POST(
     }
 
     /*
-      Billplz sends paid=true
-      when payment is successful
+      Successful Billplz payment
     */
     const isPaid =
       paid === "true" &&
       state === "paid";
 
     /*
-      5. Find matching Supabase order
+      Find order using stored Billplz Bill ID
     */
     const {
       data: order,
       error: orderError,
-    } =
-      await supabaseAdmin
-        .from("orders")
-        .select(
-          "id, payment_status, billplz_bill_id"
-        )
-        .eq(
-          "billplz_bill_id",
-          billId
-        )
-        .maybeSingle();
+    } = await supabaseAdmin
+      .from("orders")
+      .select(`
+        id,
+        payment_status,
+        billplz_bill_id
+      `)
+      .eq(
+        "billplz_bill_id",
+        billId
+      )
+      .maybeSingle();
 
     if (orderError) {
       console.error(
@@ -213,8 +200,7 @@ export async function POST(
 
       return NextResponse.json(
         {
-          error:
-            "Unable to find order",
+          error: "Unable to find order",
         },
         {
           status: 500,
@@ -230,8 +216,7 @@ export async function POST(
 
       return NextResponse.json(
         {
-          error:
-            "Order not found",
+          error: "Order not found",
         },
         {
           status: 404,
@@ -240,34 +225,39 @@ export async function POST(
     }
 
     /*
-      6. Update order if payment succeeded
+      Successful payment
     */
     if (isPaid) {
-      /*
-        Prevent unnecessary repeated update
-      */
-      if (
-        order.payment_status !==
-        "paid"
-      ) {
+      if (order.payment_status !== "paid") {
+        let paymentDate =
+          new Date().toISOString();
+
+        if (paidAt) {
+          const parsedDate =
+            new Date(paidAt);
+
+          if (
+            !Number.isNaN(
+              parsedDate.getTime()
+            )
+          ) {
+            paymentDate =
+              parsedDate.toISOString();
+          }
+        }
+
         const {
           error: updateError,
-        } =
-          await supabaseAdmin
-            .from("orders")
-            .update({
-              payment_status:
-                "paid",
-
-              paid_at:
-                paidAt ||
-                new Date()
-                  .toISOString(),
-            })
-            .eq(
-              "id",
-              order.id
-            );
+        } = await supabaseAdmin
+          .from("orders")
+          .update({
+            payment_status: "paid",
+            paid_at: paymentDate,
+          })
+          .eq(
+            "id",
+            order.id
+          );
 
         if (updateError) {
           console.error(
@@ -285,36 +275,31 @@ export async function POST(
             }
           );
         }
-      }
 
-      console.log(
-        `Order ${order.id} marked as PAID`
-      );
+        console.log(
+          `Order ${order.id} marked as PAID`
+        );
+      } else {
+        console.log(
+          `Order ${order.id} was already PAID`
+        );
+      }
     } else {
       console.log(
-        `Bill ${billId} is not paid. State: ${state}`
+        `Bill ${billId} is not paid. paid=${paid}, state=${state}`
       );
     }
 
     /*
-      7. Return HTTP 200
-
-      Billplz expects a successful
-      response so it does not retry.
+      Important:
+      Return HTTP 200 after successful processing
     */
     return NextResponse.json({
-      success:
-        true,
-
-      orderId:
-        order.id,
-
+      success: true,
+      orderId: order.id,
       billId,
-
       paymentStatus:
-        isPaid
-          ? "paid"
-          : "pending",
+        isPaid ? "paid" : "pending",
     });
   } catch (error) {
     console.error(
@@ -324,8 +309,7 @@ export async function POST(
 
     return NextResponse.json(
       {
-        error:
-          "Callback processing failed",
+        error: "Callback processing failed",
       },
       {
         status: 500,
