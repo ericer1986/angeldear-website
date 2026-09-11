@@ -1,76 +1,16 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-export async function POST(
-  request: Request
-) {
+export async function POST(request: Request) {
   try {
-    const body =
-      await request.json();
+    const body = await request.json();
 
-    const {
-      name,
-      email,
-      phone,
-      amount,
-      orderId,
-    } = body;
+    const { orderId } = body;
 
-    /*
-      Validate customer
-    */
-    if (!name) {
-      return NextResponse.json(
-        {
-          error:
-            "Customer name is required",
-        },
-        {
-          status: 400,
-        }
-      );
-    }
-
-    if (!email && !phone) {
-      return NextResponse.json(
-        {
-          error:
-            "Email or phone is required",
-        },
-        {
-          status: 400,
-        }
-      );
-    }
-
-    /*
-      Validate amount
-    */
-    if (
-      !amount ||
-      Number(amount) <= 0
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "Valid amount is required",
-        },
-        {
-          status: 400,
-        }
-      );
-    }
-
-    /*
-      Order ID is now required
-      because every Billplz bill
-      must belong to a Supabase order
-    */
     if (!orderId) {
       return NextResponse.json(
         {
-          error:
-            "Order ID is required",
+          error: "Order ID is required",
         },
         {
           status: 400,
@@ -79,33 +19,18 @@ export async function POST(
     }
 
     /*
-      Environment Variables
+      Billplz environment variables
     */
-    const secretKey =
-      process.env
-        .BILLPLZ_SECRET_KEY;
+    const secretKey = process.env.BILLPLZ_SECRET_KEY;
+    const collectionId = process.env.BILLPLZ_COLLECTION_ID;
+    const apiUrl = process.env.BILLPLZ_API_URL;
 
-    const collectionId =
-      process.env
-        .BILLPLZ_COLLECTION_ID;
-
-    const apiUrl =
-      process.env
-        .BILLPLZ_API_URL;
-
-    if (
-      !secretKey ||
-      !collectionId ||
-      !apiUrl
-    ) {
-      console.error(
-        "Billplz configuration is incomplete"
-      );
+    if (!secretKey || !collectionId || !apiUrl) {
+      console.error("Billplz environment variables are missing");
 
       return NextResponse.json(
         {
-          error:
-            "Billplz configuration is incomplete",
+          error: "Billplz configuration is incomplete",
         },
         {
           status: 500,
@@ -114,30 +39,32 @@ export async function POST(
     }
 
     /*
-      Verify order exists first
+      Load trusted order information
+      directly from Supabase.
     */
     const {
-      data: existingOrder,
-      error: orderLookupError,
-    } =
-      await supabaseAdmin
-        .from("orders")
-        .select(
-          "id, total, payment_status, billplz_bill_id"
-        )
-        .eq("id", orderId)
-        .maybeSingle();
+      data: order,
+      error: orderError,
+    } = await supabaseAdmin
+      .from("orders")
+      .select(`
+        id,
+        customer_name,
+        email,
+        phone,
+        total,
+        payment_status,
+        billplz_bill_id
+      `)
+      .eq("id", orderId)
+      .maybeSingle();
 
-    if (orderLookupError) {
-      console.error(
-        "Order Lookup Error:",
-        orderLookupError
-      );
+    if (orderError) {
+      console.error("Order Lookup Error:", orderError);
 
       return NextResponse.json(
         {
-          error:
-            "Unable to verify order",
+          error: "Unable to verify order",
         },
         {
           status: 500,
@@ -145,11 +72,10 @@ export async function POST(
       );
     }
 
-    if (!existingOrder) {
+    if (!order) {
       return NextResponse.json(
         {
-          error:
-            "Order not found",
+          error: "Order not found",
         },
         {
           status: 404,
@@ -158,16 +84,13 @@ export async function POST(
     }
 
     /*
-      Prevent creating another bill
-      if this order already has one
+      Do not create another payment
+      for an already paid order.
     */
-    if (
-      existingOrder.billplz_bill_id
-    ) {
+    if (order.payment_status === "paid") {
       return NextResponse.json(
         {
-          error:
-            "This order already has a Billplz bill",
+          error: "This order has already been paid",
         },
         {
           status: 409,
@@ -176,28 +99,50 @@ export async function POST(
     }
 
     /*
-      Important security check:
-
-      Do not trust total received
-      from browser.
-
-      Use total stored in Supabase.
+      Prevent duplicate Billplz bills.
     */
-    const orderTotal =
-      Number(
-        existingOrder.total
-      );
-
-    if (
-      !Number.isFinite(
-        orderTotal
-      ) ||
-      orderTotal <= 0
-    ) {
+    if (order.billplz_bill_id) {
       return NextResponse.json(
         {
-          error:
-            "Invalid order total",
+          error: "This order already has a Billplz bill",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    /*
+      Validate trusted order amount.
+    */
+    const orderTotal = Number(order.total);
+
+    if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
+      return NextResponse.json(
+        {
+          error: "Invalid order total",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    if (!order.customer_name) {
+      return NextResponse.json(
+        {
+          error: "Customer name is missing",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    if (!order.email && !order.phone) {
+      return NextResponse.json(
+        {
+          error: "Customer email or phone is required",
         },
         {
           status: 400,
@@ -206,22 +151,34 @@ export async function POST(
     }
 
     /*
-      Billplz amount uses cents.
-
-      RM159.90
-      becomes
-      15990
+      RM159.90 → 15990 cents
     */
-    const amountInCents =
-      Math.round(
-        orderTotal * 100
-      );
+    const amountInCents = Math.round(orderTotal * 100);
 
     /*
-      Prepare Billplz Form
+      Automatically detect current website URL.
+
+      Local:
+      http://localhost:3000
+
+      Vercel:
+      https://angeldear-website.vercel.app
+
+      Future custom domain:
+      automatically uses that domain.
     */
-    const formData =
-      new URLSearchParams();
+    const origin = new URL(request.url).origin;
+
+    const callbackUrl =
+      `${origin}/api/billplz/callback`;
+
+    const redirectUrl =
+      `${origin}/order-success?order=${orderId}`;
+
+    /*
+      Prepare Billplz request.
+    */
+    const formData = new URLSearchParams();
 
     formData.append(
       "collection_id",
@@ -230,20 +187,20 @@ export async function POST(
 
     formData.append(
       "name",
-      name
+      order.customer_name
     );
 
-    if (email) {
+    if (order.email) {
       formData.append(
         "email",
-        email
+        order.email
       );
     }
 
-    if (phone) {
+    if (order.phone) {
       formData.append(
         "mobile",
-        phone
+        order.phone
       );
     }
 
@@ -257,67 +214,45 @@ export async function POST(
       `Angel Dear Order ${orderId}`
     );
 
-    /*
-      Callback URL
-
-      Localhost cannot receive
-      Billplz server callback.
-
-      We will replace this after
-      deploying to Vercel.
-    */
     formData.append(
       "callback_url",
-      "http://localhost:3000/api/billplz/callback"
+      callbackUrl
     );
 
-    /*
-      Customer browser return URL
-    */
     formData.append(
       "redirect_url",
-      `http://localhost:3000/order-success?order=${orderId}`
+      redirectUrl
     );
 
     /*
       Billplz Basic Authentication
     */
-    const authorization =
-      Buffer.from(
-        `${secretKey}:`
-      ).toString("base64");
+    const authorization = Buffer.from(
+      `${secretKey}:`
+    ).toString("base64");
 
     /*
-      Create Billplz Bill
+      Create Billplz bill
     */
-    const response =
-      await fetch(
-        `${apiUrl}/bills`,
-        {
-          method: "POST",
+    const response = await fetch(
+      `${apiUrl}/bills`,
+      {
+        method: "POST",
 
-          headers: {
-            Authorization:
-              `Basic ${authorization}`,
+        headers: {
+          Authorization: `Basic ${authorization}`,
+          "Content-Type":
+            "application/x-www-form-urlencoded",
+        },
 
-            "Content-Type":
-              "application/x-www-form-urlencoded",
-          },
+        body: formData.toString(),
 
-          body:
-            formData.toString(),
+        cache: "no-store",
+      }
+    );
 
-          cache:
-            "no-store",
-        }
-      );
+    const data = await response.json();
 
-    const data =
-      await response.json();
-
-    /*
-      Billplz Error
-    */
     if (!response.ok) {
       console.error(
         "Billplz API Error:",
@@ -329,29 +264,24 @@ export async function POST(
           error:
             "Failed to create Billplz bill",
 
-          details:
-            data,
+          details: data,
         },
         {
-          status:
-            response.status,
+          status: response.status,
         }
       );
     }
 
-    /*
-      Make sure Billplz returned ID
-    */
-    if (!data.id) {
+    if (!data.id || !data.url) {
       console.error(
-        "Billplz did not return bill ID:",
+        "Invalid Billplz Response:",
         data
       );
 
       return NextResponse.json(
         {
           error:
-            "Billplz bill ID was not returned",
+            "Billplz did not return a valid bill",
         },
         {
           status: 500,
@@ -361,21 +291,16 @@ export async function POST(
 
     /*
       Save Billplz Bill ID
-      back into Supabase order
+      into the matching order.
     */
     const {
       error: updateError,
-    } =
-      await supabaseAdmin
-        .from("orders")
-        .update({
-          billplz_bill_id:
-            data.id,
-        })
-        .eq(
-          "id",
-          orderId
-        );
+    } = await supabaseAdmin
+      .from("orders")
+      .update({
+        billplz_bill_id: data.id,
+      })
+      .eq("id", orderId);
 
     if (updateError) {
       console.error(
@@ -398,22 +323,14 @@ export async function POST(
       Success
     */
     return NextResponse.json({
-      success:
-        true,
-
+      success: true,
       orderId,
-
-      billId:
-        data.id,
-
-      billUrl:
-        data.url,
-
-      state:
-        data.state,
-
-      amount:
-        data.amount,
+      billId: data.id,
+      billUrl: data.url,
+      state: data.state,
+      amount: data.amount,
+      callbackUrl,
+      redirectUrl,
     });
   } catch (error) {
     console.error(
