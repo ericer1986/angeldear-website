@@ -3,14 +3,79 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
+    // =========================================
+    // 1. Verify logged-in customer
+    // =========================================
 
-    const { orderId } = body;
+    const authorization =
+      request.headers.get("authorization");
+
+    if (
+      !authorization ||
+      !authorization.startsWith("Bearer ")
+    ) {
+      return NextResponse.json(
+        {
+          error: "Authentication required",
+        },
+        {
+          status: 401,
+        }
+      );
+    }
+
+    const accessToken =
+      authorization.replace(
+        "Bearer ",
+        ""
+      );
+
+    const {
+      data: userData,
+      error: userError,
+    } =
+      await supabaseAdmin.auth.getUser(
+        accessToken
+      );
+
+    if (
+      userError ||
+      !userData.user
+    ) {
+      console.error(
+        "Payment Auth Error:",
+        userError
+      );
+
+      return NextResponse.json(
+        {
+          error:
+            "Invalid or expired login session",
+        },
+        {
+          status: 401,
+        }
+      );
+    }
+
+    const currentUser =
+      userData.user;
+
+    // =========================================
+    // 2. Read request
+    // =========================================
+
+    const body =
+      await request.json();
+
+    const { orderId } =
+      body;
 
     if (!orderId) {
       return NextResponse.json(
         {
-          error: "Order ID is required",
+          error:
+            "Order ID is required",
         },
         {
           status: 400,
@@ -18,19 +83,35 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      Billplz environment variables
-    */
-    const secretKey = process.env.BILLPLZ_SECRET_KEY;
-    const collectionId = process.env.BILLPLZ_COLLECTION_ID;
-    const apiUrl = process.env.BILLPLZ_API_URL;
+    // =========================================
+    // 3. Billplz configuration
+    // =========================================
 
-    if (!secretKey || !collectionId || !apiUrl) {
-      console.error("Billplz environment variables are missing");
+    const secretKey =
+      process.env
+        .BILLPLZ_SECRET_KEY;
+
+    const collectionId =
+      process.env
+        .BILLPLZ_COLLECTION_ID;
+
+    const apiUrl =
+      process.env
+        .BILLPLZ_API_URL;
+
+    if (
+      !secretKey ||
+      !collectionId ||
+      !apiUrl
+    ) {
+      console.error(
+        "Billplz environment variables are missing"
+      );
 
       return NextResponse.json(
         {
-          error: "Billplz configuration is incomplete",
+          error:
+            "Billplz configuration is incomplete",
         },
         {
           status: 500,
@@ -38,10 +119,10 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      Load trusted order information
-      directly from Supabase.
-    */
+    // =========================================
+    // 4. Load trusted order
+    // =========================================
+
     const {
       data: order,
       error: orderError,
@@ -49,6 +130,7 @@ export async function POST(request: Request) {
       .from("orders")
       .select(`
         id,
+        user_id,
         customer_name,
         email,
         phone,
@@ -56,15 +138,22 @@ export async function POST(request: Request) {
         payment_status,
         billplz_bill_id
       `)
-      .eq("id", orderId)
+      .eq(
+        "id",
+        orderId
+      )
       .maybeSingle();
 
     if (orderError) {
-      console.error("Order Lookup Error:", orderError);
+      console.error(
+        "Order Lookup Error:",
+        orderError
+      );
 
       return NextResponse.json(
         {
-          error: "Unable to verify order",
+          error:
+            "Unable to verify order",
         },
         {
           status: 500,
@@ -75,7 +164,8 @@ export async function POST(request: Request) {
     if (!order) {
       return NextResponse.json(
         {
-          error: "Order not found",
+          error:
+            "Order not found",
         },
         {
           status: 404,
@@ -83,14 +173,47 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      Do not create another payment
-      for an already paid order.
-    */
-    if (order.payment_status === "paid") {
+    // =========================================
+    // 5. Verify order ownership
+    // =========================================
+
+    if (
+      !order.user_id ||
+      order.user_id !==
+        currentUser.id
+    ) {
+      console.warn(
+        "Unauthorized Billplz order access:",
+        {
+          orderId,
+          userId:
+            currentUser.id,
+        }
+      );
+
       return NextResponse.json(
         {
-          error: "This order has already been paid",
+          error:
+            "You are not authorized to pay this order",
+        },
+        {
+          status: 403,
+        }
+      );
+    }
+
+    // =========================================
+    // 6. Prevent duplicate / paid bills
+    // =========================================
+
+    if (
+      order.payment_status ===
+      "paid"
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "This order has already been paid",
         },
         {
           status: 409,
@@ -98,13 +221,13 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      Prevent duplicate Billplz bills.
-    */
-    if (order.billplz_bill_id) {
+    if (
+      order.billplz_bill_id
+    ) {
       return NextResponse.json(
         {
-          error: "This order already has a Billplz bill",
+          error:
+            "This order already has a Billplz bill",
         },
         {
           status: 409,
@@ -112,15 +235,23 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      Validate trusted order amount.
-    */
-    const orderTotal = Number(order.total);
+    // =========================================
+    // 7. Validate trusted order information
+    // =========================================
 
-    if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
+    const orderTotal =
+      Number(order.total);
+
+    if (
+      !Number.isFinite(
+        orderTotal
+      ) ||
+      orderTotal <= 0
+    ) {
       return NextResponse.json(
         {
-          error: "Invalid order total",
+          error:
+            "Invalid order total",
         },
         {
           status: 400,
@@ -128,10 +259,13 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!order.customer_name) {
+    if (
+      !order.customer_name
+    ) {
       return NextResponse.json(
         {
-          error: "Customer name is missing",
+          error:
+            "Customer name is missing",
         },
         {
           status: 400,
@@ -139,10 +273,14 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!order.email && !order.phone) {
+    if (
+      !order.email &&
+      !order.phone
+    ) {
       return NextResponse.json(
         {
-          error: "Customer email or phone is required",
+          error:
+            "Customer email or phone is required",
         },
         {
           status: 400,
@@ -150,24 +288,19 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      RM159.90 → 15990 cents
-    */
-    const amountInCents = Math.round(orderTotal * 100);
+    // =========================================
+    // 8. Build Billplz bill
+    // =========================================
 
-    /*
-      Automatically detect current website URL.
+    const amountInCents =
+      Math.round(
+        orderTotal * 100
+      );
 
-      Local:
-      http://localhost:3000
-
-      Vercel:
-      https://angeldear-website.vercel.app
-
-      Future custom domain:
-      automatically uses that domain.
-    */
-    const origin = new URL(request.url).origin;
+    const origin =
+      new URL(
+        request.url
+      ).origin;
 
     const callbackUrl =
       `${origin}/api/billplz/callback`;
@@ -175,10 +308,8 @@ export async function POST(request: Request) {
     const redirectUrl =
       `${origin}/order-success?order=${orderId}`;
 
-    /*
-      Prepare Billplz request.
-    */
-    const formData = new URLSearchParams();
+    const formData =
+      new URLSearchParams();
 
     formData.append(
       "collection_id",
@@ -224,34 +355,37 @@ export async function POST(request: Request) {
       redirectUrl
     );
 
-    /*
-      Billplz Basic Authentication
-    */
-    const authorization = Buffer.from(
-      `${secretKey}:`
-    ).toString("base64");
+    const billplzAuthorization =
+      Buffer.from(
+        `${secretKey}:`
+      ).toString(
+        "base64"
+      );
 
-    /*
-      Create Billplz bill
-    */
-    const response = await fetch(
-      `${apiUrl}/bills`,
-      {
-        method: "POST",
+    // =========================================
+    // 9. Create Billplz bill
+    // =========================================
 
-        headers: {
-          Authorization: `Basic ${authorization}`,
-          "Content-Type":
-            "application/x-www-form-urlencoded",
-        },
+    const response =
+      await fetch(
+        `${apiUrl}/bills`,
+        {
+          method: "POST",
+          headers: {
+            Authorization:
+              `Basic ${billplzAuthorization}`,
+            "Content-Type":
+              "application/x-www-form-urlencoded",
+          },
+          body:
+            formData.toString(),
+          cache:
+            "no-store",
+        }
+      );
 
-        body: formData.toString(),
-
-        cache: "no-store",
-      }
-    );
-
-    const data = await response.json();
+    const data =
+      await response.json();
 
     if (!response.ok) {
       console.error(
@@ -263,16 +397,20 @@ export async function POST(request: Request) {
         {
           error:
             "Failed to create Billplz bill",
-
-          details: data,
+          details:
+            data,
         },
         {
-          status: response.status,
+          status:
+            response.status,
         }
       );
     }
 
-    if (!data.id || !data.url) {
+    if (
+      !data.id ||
+      !data.url
+    ) {
       console.error(
         "Invalid Billplz Response:",
         data
@@ -289,18 +427,26 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      Save Billplz Bill ID
-      into the matching order.
-    */
+    // =========================================
+    // 10. Save Billplz bill ID
+    // =========================================
+
     const {
       error: updateError,
     } = await supabaseAdmin
       .from("orders")
       .update({
-        billplz_bill_id: data.id,
+        billplz_bill_id:
+          data.id,
       })
-      .eq("id", orderId);
+      .eq(
+        "id",
+        orderId
+      )
+      .eq(
+        "user_id",
+        currentUser.id
+      );
 
     if (updateError) {
       console.error(
@@ -319,18 +465,21 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      Success
-    */
+    // =========================================
+    // 11. Success
+    // =========================================
+
     return NextResponse.json({
       success: true,
       orderId,
-      billId: data.id,
-      billUrl: data.url,
-      state: data.state,
-      amount: data.amount,
-      callbackUrl,
-      redirectUrl,
+      billId:
+        data.id,
+      billUrl:
+        data.url,
+      state:
+        data.state,
+      amount:
+        data.amount,
     });
   } catch (error) {
     console.error(

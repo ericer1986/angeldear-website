@@ -8,6 +8,14 @@ import { supabase } from "@/lib/supabase";
 export default function CheckoutPage() {
   const router = useRouter();
 
+  /*
+    Important:
+    Do NOT clear cart here.
+
+    Cart will only be cleared after
+    Billplz payment is confirmed as PAID
+    on /order-success.
+  */
   const { items } = useCart();
 
   const [customerName, setCustomerName] =
@@ -34,38 +42,44 @@ export default function CheckoutPage() {
   const [loading, setLoading] =
     useState(false);
 
-  const [
-    errorMessage,
-    setErrorMessage,
-  ] = useState("");
+  const [errorMessage, setErrorMessage] =
+    useState("");
 
   /*
-    Load logged-in customer information
+    =========================================
+    LOAD LOGGED-IN CUSTOMER
+    =========================================
   */
   useEffect(() => {
     async function loadCustomer() {
       const {
         data: { session },
-      } = await supabase.auth.getSession();
+      } =
+        await supabase.auth.getSession();
 
-      const user = session?.user;
+      const user =
+        session?.user;
 
       if (!user) {
+        setUserId(null);
         return;
       }
 
       setUserId(user.id);
 
       setCustomerName(
-        user.user_metadata?.full_name || ""
+        user.user_metadata?.full_name ||
+          ""
       );
 
       setEmail(
-        user.email || ""
+        user.email ||
+          ""
       );
 
       setPhone(
-        user.user_metadata?.phone || ""
+        user.user_metadata?.phone ||
+          ""
       );
     }
 
@@ -73,8 +87,11 @@ export default function CheckoutPage() {
   }, []);
 
   /*
-    Calculate subtotal
+    =========================================
+    CALCULATE ORDER TOTALS
+    =========================================
   */
+
   const subtotal =
     items.reduce(
       (total, item) =>
@@ -87,38 +104,35 @@ export default function CheckoutPage() {
     );
 
   /*
-    Shipping
-
-    Free shipping for RM150+
-    Otherwise RM10
+    Free shipping for RM150 and above
   */
   const shipping =
     subtotal >= 150
       ? 0
       : 10;
 
-  /*
-    Grand Total
-  */
   const total =
     subtotal + shipping;
 
   /*
-    Place Order
+    =========================================
+    PLACE ORDER
+    =========================================
   */
+
   async function handlePlaceOrder() {
     setErrorMessage("");
 
     /*
-      Validate form
+      Validate delivery information
     */
     if (
-      !customerName ||
-      !email ||
-      !phone ||
-      !address ||
-      !city ||
-      !postcode
+      !customerName.trim() ||
+      !email.trim() ||
+      !phone.trim() ||
+      !address.trim() ||
+      !city.trim() ||
+      !postcode.trim()
     ) {
       setErrorMessage(
         "Please fill in all required fields."
@@ -128,7 +142,7 @@ export default function CheckoutPage() {
     }
 
     /*
-      Check cart
+      Validate cart
     */
     if (items.length === 0) {
       setErrorMessage(
@@ -142,55 +156,100 @@ export default function CheckoutPage() {
       setLoading(true);
 
       /*
-        Get latest login session
+        =========================================
+        1. GET CURRENT LOGIN SESSION
+        =========================================
+
+        Checkout now requires an authenticated
+        customer.
+
+        We do NOT trust the userId stored only
+        in React state.
       */
+
       const {
-        data: { session },
+        data: {
+          session,
+        },
+        error: sessionError,
       } =
         await supabase.auth.getSession();
 
+      if (sessionError) {
+        console.error(
+          "Session Error:",
+          sessionError
+        );
+
+        throw new Error(
+          "Unable to verify your login session."
+        );
+      }
+
+      if (
+        !session ||
+        !session.user
+      ) {
+        throw new Error(
+          "Please login before proceeding to payment."
+        );
+      }
+
       const currentUserId =
-        session?.user?.id ||
-        userId ||
-        null;
+        session.user.id;
 
       /*
-        1. Generate Order ID
+        =========================================
+        2. GENERATE ORDER ID
+        =========================================
       */
+
       const orderId =
         crypto.randomUUID();
 
       /*
-        2. Create Supabase Order
+        =========================================
+        3. CREATE ORDER
+        =========================================
       */
+
       const {
         error: orderError,
       } =
         await supabase
           .from("orders")
           .insert({
-            id: orderId,
+            id:
+              orderId,
 
+            /*
+              Important:
+              The order belongs to the
+              currently authenticated user.
+            */
             user_id:
               currentUserId,
 
             customer_name:
-              customerName,
+              customerName.trim(),
 
-            email,
+            email:
+              email.trim(),
 
-            phone,
+            phone:
+              phone.trim(),
 
-            address,
+            address:
+              address.trim(),
 
-            city,
+            city:
+              city.trim(),
 
-            postcode,
+            postcode:
+              postcode.trim(),
 
             subtotal,
-
             shipping,
-
             total,
 
             payment_status:
@@ -200,23 +259,38 @@ export default function CheckoutPage() {
               "pending",
           });
 
-      /*
-        Order Error
-      */
       if (orderError) {
         console.error(
-          "Order Error:",
-          orderError
+          "ORDER ERROR MESSAGE:",
+          orderError.message
+        );
+
+        console.error(
+          "ORDER ERROR CODE:",
+          orderError.code
+        );
+
+        console.error(
+          "ORDER ERROR DETAILS:",
+          orderError.details
+        );
+
+        console.error(
+          "ORDER ERROR HINT:",
+          orderError.hint
         );
 
         throw new Error(
-          orderError.message
+          `${orderError.code}: ${orderError.message}`
         );
       }
 
       /*
-        3. Prepare Order Items
+        =========================================
+        4. CREATE ORDER ITEMS
+        =========================================
       */
+
       const orderItems =
         items.map(
           (item) => ({
@@ -239,9 +313,6 @@ export default function CheckoutPage() {
           })
         );
 
-      /*
-        Insert Order Items
-      */
       const {
         error: itemsError,
       } =
@@ -251,9 +322,6 @@ export default function CheckoutPage() {
             orderItems
           );
 
-      /*
-        Order Items Error
-      */
       if (itemsError) {
         console.error(
           "Order Items Error:",
@@ -266,80 +334,118 @@ export default function CheckoutPage() {
       }
 
       /*
-        4. Create Billplz Bill
+        =========================================
+        5. CREATE BILLPLZ BILL
+        =========================================
+
+        Important security change:
+
+        We send ONLY:
+        - orderId
+        - authenticated user's access token
+
+        We do NOT send:
+        - amount
+        - name
+        - email
+        - phone
+
+        The server will load trusted order
+        information directly from Supabase.
       */
+
       const billResponse =
         await fetch(
           "/api/billplz/create-bill",
           {
-            method: "POST",
+            method:
+              "POST",
 
             headers: {
               "Content-Type":
                 "application/json",
+
+              Authorization:
+                `Bearer ${session.access_token}`,
             },
 
             body:
               JSON.stringify({
-                name:
-                  customerName,
-
-                email,
-
-                phone,
-
-                amount:
-                  total,
-
                 orderId,
               }),
           }
         );
 
       /*
-        Read Billplz response
+        Read server response
       */
-      const billData =
-        await billResponse.json();
+      let billData: {
+        success?: boolean;
+        billId?: string;
+        billUrl?: string;
+        state?: string;
+        amount?: number;
+        error?: string;
+        details?: unknown;
+      };
+
+      try {
+        billData =
+          await billResponse.json();
+      } catch {
+        throw new Error(
+          "Invalid response from payment server."
+        );
+      }
 
       /*
-        Billplz API Error
+        Billplz API error
       */
       if (!billResponse.ok) {
         console.error(
-          "Billplz Error:",
+          "Billplz Create Bill Error:",
           billData
         );
 
         throw new Error(
           billData.error ||
-            "Unable to create payment."
+            "Unable to create payment bill."
         );
       }
 
       /*
-        Check Billplz URL
+        Make sure Billplz returned payment URL
       */
       if (!billData.billUrl) {
+        console.error(
+          "Billplz bill URL missing:",
+          billData
+        );
+
         throw new Error(
-          "Billplz payment URL was not returned."
+          "Payment link was not returned."
         );
       }
 
       /*
-        IMPORTANT
+        =========================================
+        6. REDIRECT TO BILLPLZ
+        =========================================
 
-        Do NOT clear cart here.
+        DO NOT clear cart here.
 
-        Cart will only be cleared
-        after payment is confirmed.
+        The customer may:
+        - cancel payment
+        - fail payment
+        - close Billplz
+
+        Cart is cleared only after payment_status
+        becomes "paid" on the success page.
       */
 
-      /*
-        5. Redirect to Billplz
-      */
       window.location.href =
         billData.billUrl;
+
     } catch (error) {
       console.error(
         "Checkout Error:",
@@ -351,26 +457,30 @@ export default function CheckoutPage() {
           ? error.message
           : "Something went wrong. Please try again."
       );
-    } finally {
+
       setLoading(false);
     }
   }
 
   /*
-    Empty Cart
+    =========================================
+    EMPTY CART
+    =========================================
   */
-  if (items.length === 0) {
+
+  if (
+    items.length === 0
+  ) {
     return (
       <main className="min-h-screen bg-[#FAF8F6] py-20">
         <div className="max-w-3xl mx-auto px-6 text-center">
-
           <h1 className="text-4xl font-bold text-[#38435A]">
             Your cart is empty
           </h1>
 
           <p className="mt-4 text-gray-500">
-            Please add some products before
-            checking out.
+            Please add some products
+            before checking out.
           </p>
 
           <button
@@ -379,30 +489,35 @@ export default function CheckoutPage() {
                 "/shop"
               )
             }
-            className="mt-8 rounded-full bg-[#E8C9C1] px-8 py-3 font-medium hover:bg-[#DDB8AE] transition"
+            className="mt-8 rounded-full bg-[#E8C9C1] px-8 py-3 font-medium transition hover:bg-[#DDB8AE]"
           >
             Continue Shopping
           </button>
-
         </div>
       </main>
     );
   }
 
+  /*
+    =========================================
+    CHECKOUT PAGE
+    =========================================
+  */
+
   return (
     <main className="min-h-screen bg-[#FAF8F6] py-16">
-
       <div className="max-w-6xl mx-auto px-6">
-
         <h1 className="text-4xl font-bold text-[#38435A] mb-10">
           Checkout
         </h1>
 
         <div className="grid md:grid-cols-2 gap-10">
 
-          {/* Customer Information */}
-          <div className="bg-white rounded-3xl p-8 shadow-sm">
+          {/* =================================
+              DELIVERY INFORMATION
+          ================================= */}
 
+          <div className="bg-white rounded-3xl p-8 shadow-sm">
             <h2 className="text-2xl font-semibold text-[#38435A] mb-6">
               Delivery Information
             </h2>
@@ -421,103 +536,137 @@ export default function CheckoutPage() {
                     e.target.value
                   )
                 }
-                className="w-full rounded-xl border px-4 py-3"
+                disabled={
+                  loading
+                }
+                className="w-full rounded-xl border px-4 py-3 disabled:bg-gray-100"
               />
 
               {/* Email */}
               <input
                 type="email"
                 placeholder="Email Address"
-                value={email}
+                value={
+                  email
+                }
                 onChange={(e) =>
                   setEmail(
                     e.target.value
                   )
                 }
-                className="w-full rounded-xl border px-4 py-3"
+                disabled={
+                  loading
+                }
+                className="w-full rounded-xl border px-4 py-3 disabled:bg-gray-100"
               />
 
               {/* Phone */}
               <input
                 type="tel"
                 placeholder="Phone Number"
-                value={phone}
+                value={
+                  phone
+                }
                 onChange={(e) =>
                   setPhone(
                     e.target.value
                   )
                 }
-                className="w-full rounded-xl border px-4 py-3"
+                disabled={
+                  loading
+                }
+                className="w-full rounded-xl border px-4 py-3 disabled:bg-gray-100"
               />
 
               {/* Address */}
               <textarea
                 placeholder="Delivery Address"
-                value={address}
+                value={
+                  address
+                }
                 onChange={(e) =>
                   setAddress(
                     e.target.value
                   )
                 }
                 rows={4}
-                className="w-full rounded-xl border px-4 py-3"
+                disabled={
+                  loading
+                }
+                className="w-full rounded-xl border px-4 py-3 disabled:bg-gray-100"
               />
 
               {/* City */}
               <input
                 type="text"
                 placeholder="City"
-                value={city}
+                value={
+                  city
+                }
                 onChange={(e) =>
                   setCity(
                     e.target.value
                   )
                 }
-                className="w-full rounded-xl border px-4 py-3"
+                disabled={
+                  loading
+                }
+                className="w-full rounded-xl border px-4 py-3 disabled:bg-gray-100"
               />
 
               {/* Postcode */}
               <input
                 type="text"
                 placeholder="Postcode"
-                value={postcode}
+                value={
+                  postcode
+                }
                 onChange={(e) =>
                   setPostcode(
                     e.target.value
                   )
                 }
-                className="w-full rounded-xl border px-4 py-3"
+                disabled={
+                  loading
+                }
+                className="w-full rounded-xl border px-4 py-3 disabled:bg-gray-100"
               />
-
             </div>
 
             {/* Login Status */}
-            {userId && (
+
+            {userId ? (
               <div className="mt-5 rounded-xl bg-green-50 px-4 py-3 text-sm text-green-700">
-                Signed in customer — this order
-                will be saved to your account.
+                Signed in customer — this
+                order will be saved to your
+                account.
+              </div>
+            ) : (
+              <div className="mt-5 rounded-xl bg-yellow-50 px-4 py-3 text-sm text-yellow-700">
+                Please login before
+                proceeding to payment.
               </div>
             )}
 
             {/* Error Message */}
+
             {errorMessage && (
-              <div className="mt-6 rounded-xl bg-red-50 p-4 text-red-600 text-sm">
+              <div className="mt-6 rounded-xl bg-red-50 p-4 text-sm text-red-600">
                 {errorMessage}
               </div>
             )}
-
           </div>
 
-          {/* Order Summary */}
-          <div className="bg-white rounded-3xl p-8 shadow-sm h-fit">
+          {/* =================================
+              ORDER SUMMARY
+          ================================= */}
 
+          <div className="bg-white rounded-3xl p-8 shadow-sm h-fit">
             <h2 className="text-2xl font-semibold text-[#38435A] mb-6">
               Order Summary
             </h2>
 
-            {/* Products */}
             <div className="space-y-4">
-
               {items.map(
                 (item) => (
                   <div
@@ -526,9 +675,7 @@ export default function CheckoutPage() {
                     }
                     className="flex justify-between gap-4 border-b pb-4"
                   >
-
                     <div>
-
                       <p className="font-medium text-[#38435A]">
                         {
                           item.product
@@ -536,7 +683,7 @@ export default function CheckoutPage() {
                         }
                       </p>
 
-                      <p className="text-sm text-gray-500 mt-1">
+                      <p className="text-sm text-gray-500">
                         RM{" "}
                         {Number(
                           item.product
@@ -549,7 +696,6 @@ export default function CheckoutPage() {
                           item.quantity
                         }
                       </p>
-
                     </div>
 
                     <p className="font-semibold">
@@ -564,19 +710,19 @@ export default function CheckoutPage() {
                         2
                       )}
                     </p>
-
                   </div>
                 )
               )}
-
             </div>
 
-            {/* Totals */}
+            {/* =================================
+                TOTALS
+            ================================= */}
+
             <div className="mt-8 space-y-3">
 
               {/* Subtotal */}
               <div className="flex justify-between">
-
                 <span>
                   Subtotal
                 </span>
@@ -587,12 +733,10 @@ export default function CheckoutPage() {
                     2
                   )}
                 </span>
-
               </div>
 
               {/* Shipping */}
               <div className="flex justify-between">
-
                 <span>
                   Shipping
                 </span>
@@ -604,12 +748,10 @@ export default function CheckoutPage() {
                         2
                       )}`}
                 </span>
-
               </div>
 
               {/* Total */}
               <div className="border-t pt-4 flex justify-between text-xl font-bold text-[#38435A]">
-
                 <span>
                   Total
                 </span>
@@ -620,44 +762,51 @@ export default function CheckoutPage() {
                     2
                   )}
                 </span>
-
               </div>
-
             </div>
 
-            {/* Payment Information */}
-            <div className="mt-6 rounded-2xl bg-[#FAF8F6] p-4">
+            {/* =================================
+                PAYMENT BUTTON
+            ================================= */}
 
-              <p className="text-sm font-medium text-[#38435A]">
-                Secure Payment
-              </p>
-
-              <p className="mt-1 text-xs text-gray-500">
-                You will be redirected to Billplz
-                to complete your payment securely.
-              </p>
-
-            </div>
-
-            {/* Proceed to Payment */}
             <button
               onClick={
                 handlePlaceOrder
               }
-              disabled={loading}
-              className="mt-6 w-full rounded-full bg-[#E8C9C1] py-4 font-semibold hover:bg-[#DDB8AE] transition disabled:opacity-50"
+              disabled={
+                loading ||
+                !userId
+              }
+              className="mt-8 w-full rounded-full bg-[#E8C9C1] py-4 font-semibold transition hover:bg-[#DDB8AE] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading
                 ? "Redirecting to Payment..."
-                : "Proceed to Payment"}
+                : userId
+                  ? "Proceed to Payment"
+                  : "Login Required"}
             </button>
 
+            {!userId && (
+              <button
+                type="button"
+                onClick={() =>
+                  router.push(
+                    "/login"
+                  )
+                }
+                className="mt-3 w-full rounded-full border border-[#E8C9C1] py-3 font-medium text-[#38435A] transition hover:bg-[#FAF8F6]"
+              >
+                Login to Continue
+              </button>
+            )}
+
+            <p className="mt-4 text-center text-xs text-gray-400">
+              Secure payment powered by
+              Billplz
+            </p>
           </div>
-
         </div>
-
       </div>
-
     </main>
   );
 }
