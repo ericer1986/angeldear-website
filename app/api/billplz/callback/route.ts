@@ -19,35 +19,57 @@ function verifyBillplzSignature(
   */
 
   const sourceString = Object.entries(params)
-    .filter(([key]) => key.toLowerCase() !== "x_signature")
-    .map(([key, value]) => `${key}${value}`)
+    .filter(
+      ([key]) =>
+        key.toLowerCase() !== "x_signature"
+    )
+    .map(
+      ([key, value]) =>
+        `${key}${value}`
+    )
     .sort((a, b) => {
-      const lowerA = a.toLowerCase();
-      const lowerB = b.toLowerCase();
+      const lowerA =
+        a.toLowerCase();
 
-      if (lowerA < lowerB) return -1;
-      if (lowerA > lowerB) return 1;
+      const lowerB =
+        b.toLowerCase();
+
+      if (lowerA < lowerB) {
+        return -1;
+      }
+
+      if (lowerA > lowerB) {
+        return 1;
+      }
 
       return 0;
     })
     .join("|");
 
   const generatedSignature = crypto
-    .createHmac("sha256", xSignatureKey)
+    .createHmac(
+      "sha256",
+      xSignatureKey
+    )
     .update(sourceString)
     .digest("hex");
 
-  const receivedBuffer = Buffer.from(
-    receivedSignature.toLowerCase(),
-    "utf8"
-  );
+  const receivedBuffer =
+    Buffer.from(
+      receivedSignature.toLowerCase(),
+      "utf8"
+    );
 
-  const generatedBuffer = Buffer.from(
-    generatedSignature.toLowerCase(),
-    "utf8"
-  );
+  const generatedBuffer =
+    Buffer.from(
+      generatedSignature.toLowerCase(),
+      "utf8"
+    );
 
-  if (receivedBuffer.length !== generatedBuffer.length) {
+  if (
+    receivedBuffer.length !==
+    generatedBuffer.length
+  ) {
     return false;
   }
 
@@ -57,36 +79,52 @@ function verifyBillplzSignature(
   );
 }
 
-export async function POST(request: Request) {
+export async function POST(
+  request: Request
+) {
   try {
-    /*
-      Read Billplz callback
-    */
-    const formData = await request.formData();
+    // ========================================
+    // 1. Read Billplz callback
+    // ========================================
 
-    const params: Record<string, string> = {};
+    const formData =
+      await request.formData();
 
-    for (const [key, value] of formData.entries()) {
-      params[key] = String(value);
+    const params:
+      Record<string, string> = {};
+
+    for (
+      const [key, value]
+      of formData.entries()
+    ) {
+      params[key] =
+        String(value);
     }
 
     /*
-      Do not log secret signatures
+      Do not log x_signature or secrets.
     */
-    console.log("Billplz callback received:", {
-      id: params.id,
-      paid: params.paid,
-      state: params.state,
-      paid_at: params.paid_at,
-    });
+    console.log(
+      "Billplz callback received:",
+      {
+        id: params.id,
+        paid: params.paid,
+        state: params.state,
+        paid_at:
+          params.paid_at,
+      }
+    );
 
-    /*
-      Get X Signature
-    */
-    const receivedSignature = params.x_signature;
+    // ========================================
+    // 2. Verify Billplz X Signature
+    // ========================================
+
+    const receivedSignature =
+      params.x_signature;
 
     const xSignatureKey =
-      process.env.BILLPLZ_X_SIGNATURE_KEY;
+      process.env
+        .BILLPLZ_X_SIGNATURE_KEY;
 
     if (!xSignatureKey) {
       console.error(
@@ -95,7 +133,8 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          error: "X Signature configuration missing",
+          error:
+            "X Signature configuration missing",
         },
         {
           status: 500,
@@ -110,7 +149,8 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          error: "Missing X Signature",
+          error:
+            "Missing X Signature",
         },
         {
           status: 400,
@@ -118,9 +158,6 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      Verify callback authenticity
-    */
     const isValidSignature =
       verifyBillplzSignature(
         params,
@@ -135,7 +172,8 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          error: "Invalid X Signature",
+          error:
+            "Invalid X Signature",
         },
         {
           status: 401,
@@ -147,18 +185,27 @@ export async function POST(request: Request) {
       "Billplz X Signature verified"
     );
 
-    /*
-      Payment information
-    */
-    const billId = params.id;
-    const paid = params.paid;
-    const state = params.state;
-    const paidAt = params.paid_at;
+    // ========================================
+    // 3. Read payment information
+    // ========================================
+
+    const billId =
+      params.id;
+
+    const paid =
+      params.paid;
+
+    const state =
+      params.state;
+
+    const paidAt =
+      params.paid_at;
 
     if (!billId) {
       return NextResponse.json(
         {
-          error: "Missing Bill ID",
+          error:
+            "Missing Bill ID",
         },
         {
           status: 400,
@@ -166,31 +213,31 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      Successful Billplz payment
-    */
     const isPaid =
       paid === "true" &&
       state === "paid";
 
-    /*
-      Find order using stored Billplz Bill ID
-    */
+    // ========================================
+    // 4. Find Angel Dear order
+    // ========================================
+
     const {
       data: order,
       error: orderError,
-    } = await supabaseAdmin
-      .from("orders")
-      .select(`
-        id,
-        payment_status,
-        billplz_bill_id
-      `)
-      .eq(
-        "billplz_bill_id",
-        billId
-      )
-      .maybeSingle();
+    } =
+      await supabaseAdmin
+        .from("orders")
+        .select(`
+          id,
+          payment_status,
+          billplz_bill_id,
+          stock_deducted_at
+        `)
+        .eq(
+          "billplz_bill_id",
+          billId
+        )
+        .maybeSingle();
 
     if (orderError) {
       console.error(
@@ -200,7 +247,8 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          error: "Unable to find order",
+          error:
+            "Unable to find order",
         },
         {
           status: 500,
@@ -216,7 +264,8 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          error: "Order not found",
+          error:
+            "Order not found",
         },
         {
           status: 404,
@@ -224,82 +273,190 @@ export async function POST(request: Request) {
       );
     }
 
-    /*
-      Successful payment
-    */
-    if (isPaid) {
-      if (order.payment_status !== "paid") {
-        let paymentDate =
-          new Date().toISOString();
+    // ========================================
+    // 5. Ignore unpaid callbacks
+    // ========================================
 
-        if (paidAt) {
-          const parsedDate =
-            new Date(paidAt);
+    if (!isPaid) {
+      console.log(
+        `Bill ${billId} is not paid. paid=${paid}, state=${state}`
+      );
 
-          if (
-            !Number.isNaN(
-              parsedDate.getTime()
-            )
-          ) {
-            paymentDate =
-              parsedDate.toISOString();
-          }
+      return NextResponse.json({
+        success: true,
+        orderId:
+          order.id,
+        billId,
+        paymentStatus:
+          order.payment_status,
+        stockDeducted:
+          Boolean(
+            order.stock_deducted_at
+          ),
+      });
+    }
+
+    // ========================================
+    // 6. Mark payment as PAID
+    // ========================================
+
+    if (
+      order.payment_status !==
+      "paid"
+    ) {
+      let paymentDate =
+        new Date().toISOString();
+
+      if (paidAt) {
+        const parsedDate =
+          new Date(paidAt);
+
+        if (
+          !Number.isNaN(
+            parsedDate.getTime()
+          )
+        ) {
+          paymentDate =
+            parsedDate.toISOString();
         }
+      }
 
-        const {
-          error: updateError,
-        } = await supabaseAdmin
+      const {
+        error:
+          paymentUpdateError,
+      } =
+        await supabaseAdmin
           .from("orders")
           .update({
-            payment_status: "paid",
-            paid_at: paymentDate,
+            payment_status:
+              "paid",
+            paid_at:
+              paymentDate,
           })
           .eq(
             "id",
             order.id
           );
 
-        if (updateError) {
-          console.error(
-            "Payment Update Error:",
-            updateError
-          );
-
-          return NextResponse.json(
-            {
-              error:
-                "Unable to update payment status",
-            },
-            {
-              status: 500,
-            }
-          );
-        }
-
-        console.log(
-          `Order ${order.id} marked as PAID`
+      if (
+        paymentUpdateError
+      ) {
+        console.error(
+          "Payment Update Error:",
+          paymentUpdateError
         );
-      } else {
-        console.log(
-          `Order ${order.id} was already PAID`
+
+        return NextResponse.json(
+          {
+            error:
+              "Unable to update payment status",
+          },
+          {
+            status: 500,
+          }
         );
       }
+
+      console.log(
+        `Order ${order.id} marked as PAID`
+      );
     } else {
       console.log(
-        `Bill ${billId} is not paid. paid=${paid}, state=${state}`
+        `Order ${order.id} was already PAID`
       );
     }
 
-    /*
-      Important:
-      Return HTTP 200 after successful processing
-    */
+    // ========================================
+    // 7. Atomic stock deduction
+    //
+    // PostgreSQL function handles:
+    //
+    // - order locking
+    // - duplicate callback protection
+    // - product locking
+    // - stock validation
+    // - multi-product deduction
+    // - transaction rollback
+    // - stock_deducted_at
+    // ========================================
+
+    const {
+      data: stockResult,
+      error: stockError,
+    } =
+      await supabaseAdmin.rpc(
+        "deduct_order_stock",
+        {
+          p_order_id:
+            order.id,
+        }
+      );
+
+    if (stockError) {
+      console.error(
+        "Atomic Stock Deduction Error:",
+        {
+          orderId:
+            order.id,
+          message:
+            stockError.message,
+          code:
+            stockError.code,
+          details:
+            stockError.details,
+          hint:
+            stockError.hint,
+        }
+      );
+
+      /*
+        Payment has already succeeded.
+
+        Return HTTP 500 so Billplz can retry
+        the callback. Because the RPC is
+        transactional and idempotent, retrying
+        will not double-deduct completed stock.
+      */
+      return NextResponse.json(
+        {
+          error:
+            "Payment recorded but stock processing failed",
+        },
+        {
+          status: 500,
+        }
+      );
+    }
+
+    console.log(
+      "Atomic stock processing completed:",
+      {
+        orderId:
+          order.id,
+        alreadyDeducted:
+          stockResult
+            ?.already_deducted ??
+          false,
+      }
+    );
+
+    // ========================================
+    // 8. Callback completed successfully
+    // ========================================
+
     return NextResponse.json({
       success: true,
-      orderId: order.id,
+      orderId:
+        order.id,
       billId,
       paymentStatus:
-        isPaid ? "paid" : "pending",
+        "paid",
+      stockDeducted:
+        true,
+      alreadyDeducted:
+        stockResult
+          ?.already_deducted ??
+        false,
     });
   } catch (error) {
     console.error(
@@ -309,7 +466,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json(
       {
-        error: "Callback processing failed",
+        error:
+          "Callback processing failed",
       },
       {
         status: 500,
