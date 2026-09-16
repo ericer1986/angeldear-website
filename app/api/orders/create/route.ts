@@ -157,10 +157,10 @@ export async function POST(request: Request) {
       }
     }
 
-    // Prevent duplicate product IDs
     const productIds =
       items.map(
-        (item) => item.productId
+        (item) =>
+          item.productId
       );
 
     const uniqueProductIds =
@@ -182,7 +182,7 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 4. Read REAL product data from Supabase
+    // 4. Read REAL product data
     // =========================================
 
     const {
@@ -191,15 +191,13 @@ export async function POST(request: Request) {
     } =
       await supabaseAdmin
         .from("products")
-        .select(
-          `
-            id,
-            name,
-            price,
-            stock,
-            active
-          `
-        )
+        .select(`
+          id,
+          name,
+          price,
+          stock,
+          active
+        `)
         .in(
           "id",
           uniqueProductIds
@@ -246,7 +244,9 @@ export async function POST(request: Request) {
 
     const orderItems = [];
 
-    for (const cartItem of items) {
+    for (
+      const cartItem of items
+    ) {
       const product =
         products.find(
           (item) =>
@@ -284,7 +284,9 @@ export async function POST(request: Request) {
         Number(product.price);
 
       if (
-        !Number.isFinite(productPrice) ||
+        !Number.isFinite(
+          productPrice
+        ) ||
         productPrice < 0
       ) {
         console.error(
@@ -307,8 +309,34 @@ export async function POST(request: Request) {
         Number(product.stock);
 
       if (
-        Number.isFinite(stock) &&
-        cartItem.quantity > stock
+        !Number.isFinite(stock) ||
+        stock < 0
+      ) {
+        console.error(
+          "Invalid Product Stock:",
+          product.id
+        );
+
+        return NextResponse.json(
+          {
+            error:
+              "Unable to verify product stock.",
+          },
+          {
+            status: 500,
+          }
+        );
+      }
+
+      /*
+        This is an early customer-friendly check.
+
+        The FINAL concurrency-safe stock check
+        happens inside reserve_order_stock().
+      */
+      if (
+        cartItem.quantity >
+        stock
       ) {
         return NextResponse.json(
           {
@@ -316,7 +344,7 @@ export async function POST(request: Request) {
               `Not enough stock for ${product.name}.`,
           },
           {
-            status: 400,
+            status: 409,
           }
         );
       }
@@ -337,7 +365,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // Avoid floating-point currency problems
     subtotal =
       Math.round(
         subtotal * 100
@@ -354,7 +381,10 @@ export async function POST(request: Request) {
 
     const total =
       Math.round(
-        (subtotal + shipping) * 100
+        (
+          subtotal +
+          shipping
+        ) * 100
       ) / 100;
 
     if (total <= 0) {
@@ -432,7 +462,8 @@ export async function POST(request: Request) {
       );
 
     const {
-      error: orderItemsError,
+      error:
+        orderItemsError,
     } =
       await supabaseAdmin
         .from("order_items")
@@ -440,13 +471,14 @@ export async function POST(request: Request) {
           finalOrderItems
         );
 
-    if (orderItemsError) {
+    if (
+      orderItemsError
+    ) {
       console.error(
         "Server Order Items Insert Error:",
         orderItemsError
       );
 
-      // Remove incomplete order
       const {
         error: cleanupError,
       } =
@@ -477,7 +509,140 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 9. Return SERVER calculated values
+    // 9. Atomically reserve stock for 15 minutes
+    // =========================================
+
+    const {
+      data:
+        reservationResult,
+      error:
+        reservationError,
+    } =
+      await supabaseAdmin.rpc(
+        "reserve_order_stock",
+        {
+          p_order_id:
+            orderId,
+          p_reservation_minutes:
+            15,
+        }
+      );
+
+    if (
+      reservationError
+    ) {
+      console.error(
+        "Stock Reservation Error:",
+        {
+          orderId,
+          code:
+            reservationError.code,
+          message:
+            reservationError.message,
+        }
+      );
+
+      /*
+        Reservation failed.
+
+        No stock was deducted because the
+        PostgreSQL function is transactional.
+
+        Remove the invalid order.
+        order_items should be removed by
+        ON DELETE CASCADE.
+      */
+
+      const {
+        error: cleanupError,
+      } =
+        await supabaseAdmin
+          .from("orders")
+          .delete()
+          .eq(
+            "id",
+            orderId
+          );
+
+      if (cleanupError) {
+        console.error(
+          "Reservation Failure Cleanup Error:",
+          {
+            orderId,
+            message:
+              cleanupError.message,
+          }
+        );
+      }
+
+      const reservationMessage =
+        reservationError.message ||
+        "";
+
+      if (
+        reservationMessage.includes(
+          "INSUFFICIENT_STOCK"
+        )
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "One or more products are no longer available in the requested quantity. Please review your cart.",
+          },
+          {
+            status: 409,
+          }
+        );
+      }
+
+      return NextResponse.json(
+        {
+          error:
+            "Unable to reserve stock for this order. Please try again.",
+        },
+        {
+          status: 500,
+        }
+      );
+    }
+
+    // =========================================
+    // 10. Validate reservation response
+    // =========================================
+
+    if (
+      !reservationResult ||
+      reservationResult.success !==
+        true
+    ) {
+      console.error(
+        "Invalid Reservation Result:",
+        {
+          orderId,
+          reservationResult,
+        }
+      );
+
+      /*
+        This should not normally happen.
+        Do NOT automatically delete the order
+        here because we cannot safely assume
+        whether stock was reserved.
+      */
+
+      return NextResponse.json(
+        {
+          error:
+            "Unable to confirm stock reservation.",
+        },
+        {
+          status: 500,
+        }
+      );
+    }
+
+    // =========================================
+    // 11. Return SERVER calculated values
     // =========================================
 
     return NextResponse.json({
@@ -486,6 +651,12 @@ export async function POST(request: Request) {
       subtotal,
       shipping,
       total,
+
+      reservation: {
+        reserved: true,
+        expiresAt:
+          reservationResult.expires_at,
+      },
     });
   } catch (error) {
     console.error(
