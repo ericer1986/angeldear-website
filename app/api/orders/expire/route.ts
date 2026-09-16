@@ -46,6 +46,11 @@ export async function POST(request: Request) {
       userError ||
       !userData.user
     ) {
+      console.error(
+        "Expire Order Auth Error:",
+        userError
+      );
+
       return NextResponse.json(
         {
           error:
@@ -119,7 +124,7 @@ export async function POST(request: Request) {
       );
 
     // =========================================
-    // 4. Load order
+    // 4. Load trusted order
     // =========================================
 
     const {
@@ -194,25 +199,34 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 6. Already paid
+    // 6. Never expire paid / sold order
     // =========================================
 
     if (
       order.payment_status ===
       "paid"
     ) {
-      return NextResponse.json(
-        {
-          success: true,
-          expired: false,
-          reason:
-            "ORDER_ALREADY_PAID",
-        }
-      );
+      return NextResponse.json({
+        success: true,
+        expired: false,
+        reason:
+          "ORDER_ALREADY_PAID",
+      });
+    }
+
+    if (
+      order.stock_deducted_at
+    ) {
+      return NextResponse.json({
+        success: true,
+        expired: false,
+        reason:
+          "STOCK_ALREADY_SOLD",
+      });
     }
 
     // =========================================
-    // 7. Reservation validation
+    // 7. Reservation must exist
     // =========================================
 
     if (
@@ -230,33 +244,22 @@ export async function POST(request: Request) {
       );
     }
 
-    if (
-      order.stock_deducted_at
-    ) {
-      return NextResponse.json(
-        {
-          success: true,
-          expired: false,
-          reason:
-            "STOCK_ALREADY_SOLD",
-        }
-      );
-    }
+    // =========================================
+    // 8. Already released
+    // =========================================
 
     if (
       order.stock_released_at
     ) {
-      return NextResponse.json(
-        {
-          success: true,
-          expired: true,
-          alreadyReleased: true,
-        }
-      );
+      return NextResponse.json({
+        success: true,
+        expired: true,
+        alreadyReleased: true,
+      });
     }
 
     // =========================================
-    // 8. Reservation must actually be expired
+    // 9. Reservation must be expired
     // =========================================
 
     const expiresAt =
@@ -287,89 +290,46 @@ export async function POST(request: Request) {
       Date.now() <
       expiresAt
     ) {
-      return NextResponse.json(
-        {
-          success: true,
-          expired: false,
-          reason:
-            "RESERVATION_STILL_ACTIVE",
-          expiresAt:
-            order.stock_reservation_expires_at,
-        }
-      );
+      return NextResponse.json({
+        success: true,
+        expired: false,
+        reason:
+          "RESERVATION_STILL_ACTIVE",
+        expiresAt:
+          order.stock_reservation_expires_at,
+      });
     }
 
     // =========================================
-    // 9. Bill must exist before releasing stock
+    // 10. No Billplz bill exists
+    // Safe to expire reservation
     // =========================================
 
     if (
       !order.billplz_bill_id
     ) {
-      /*
-        No Billplz bill exists.
-
-        Since no payment bill exists,
-        the reservation can be released.
-      */
-
       const {
-        data: releaseResult,
-        error: releaseError,
+        data: expireResult,
+        error: expireError,
       } =
         await supabaseAdmin.rpc(
-          "release_order_stock",
+          "expire_order_reservation",
           {
             p_order_id:
               orderId,
           }
         );
 
-      if (releaseError) {
+      if (expireError) {
         console.error(
-          "Release Stock Error:",
-          releaseError
+          "Atomic Expire Error:",
+          expireError
         );
 
         return NextResponse.json(
           {
             error:
-              "Unable to release reserved stock",
-          },
-          {
-            status: 500,
-          }
-        );
-      }
-
-      const {
-        error: statusError,
-      } =
-        await supabaseAdmin
-          .from("orders")
-          .update({
-            payment_status:
-              "expired",
-          })
-          .eq(
-            "id",
-            orderId
-          )
-          .eq(
-            "user_id",
-            currentUser.id
-          );
-
-      if (statusError) {
-        console.error(
-          "Expire Status Update Error:",
-          statusError
-        );
-
-        return NextResponse.json(
-          {
-            error:
-              "Stock was released but order status could not be updated",
+              "Unable to expire stock reservation",
           },
           {
             status: 500,
@@ -382,12 +342,12 @@ export async function POST(request: Request) {
         expired: true,
         billDeleted: false,
         stockReleased: true,
-        releaseResult,
+        expireResult,
       });
     }
 
     // =========================================
-    // 10. Get latest Billplz bill state
+    // 11. Get latest Billplz state
     // =========================================
 
     const billResponse =
@@ -406,10 +366,31 @@ export async function POST(request: Request) {
         }
       );
 
-    const billData =
-      await billResponse.json();
+    let billData:
+      Record<string, unknown>;
 
-    if (!billResponse.ok) {
+    try {
+      billData =
+        await billResponse.json();
+    } catch {
+      console.error(
+        "Invalid Billplz Get Bill Response"
+      );
+
+      return NextResponse.json(
+        {
+          error:
+            "Invalid response from Billplz",
+        },
+        {
+          status: 502,
+        }
+      );
+    }
+
+    if (
+      !billResponse.ok
+    ) {
       console.error(
         "Billplz Get Bill Error:",
         billData
@@ -426,21 +407,32 @@ export async function POST(request: Request) {
       );
     }
 
+    const billState =
+      typeof billData.state ===
+      "string"
+        ? billData.state
+        : "";
+
+    const billPaid =
+      billData.paid === true ||
+      billData.paid === "true";
+
     // =========================================
-    // 11. Billplz says PAID
-    // Do NOT release stock
+    // 12. Billplz says PAID
+    // NEVER release stock
     // =========================================
 
     if (
-      billData.paid === true ||
-      billData.state === "paid"
+      billPaid ||
+      billState === "paid"
     ) {
       /*
-        Callback may simply be delayed.
+        Callback may be delayed.
 
-        Never release inventory here.
-        Callback remains the source of truth
-        for final paid processing.
+        Do not release inventory.
+        Existing Billplz callback remains
+        responsible for marking the order paid
+        and converting reservation to sold.
       */
 
       return NextResponse.json({
@@ -452,66 +444,35 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 12. Handle already deleted Bill
+    // 13. Already deleted Bill
     // =========================================
 
     if (
-      billData.state ===
+      billState ===
       "deleted"
     ) {
       const {
-        data: releaseResult,
-        error: releaseError,
+        data: expireResult,
+        error: expireError,
       } =
         await supabaseAdmin.rpc(
-          "release_order_stock",
+          "expire_order_reservation",
           {
             p_order_id:
               orderId,
           }
         );
 
-      if (releaseError) {
+      if (expireError) {
         console.error(
-          "Release Deleted Bill Stock Error:",
-          releaseError
+          "Atomic Expire Deleted Bill Error:",
+          expireError
         );
 
         return NextResponse.json(
           {
             error:
-              "Unable to release reserved stock",
-          },
-          {
-            status: 500,
-          }
-        );
-      }
-
-      const {
-        error: statusError,
-      } =
-        await supabaseAdmin
-          .from("orders")
-          .update({
-            payment_status:
-              "expired",
-          })
-          .eq(
-            "id",
-            orderId
-          );
-
-      if (statusError) {
-        console.error(
-          "Deleted Bill Status Error:",
-          statusError
-        );
-
-        return NextResponse.json(
-          {
-            error:
-              "Stock was released but order status could not be updated",
+              "Unable to expire stock reservation",
           },
           {
             status: 500,
@@ -524,21 +485,20 @@ export async function POST(request: Request) {
         expired: true,
         billDeleted: true,
         stockReleased: true,
-        releaseResult,
+        expireResult,
       });
     }
 
     // =========================================
-    // 13. Only DUE bill may be deleted
+    // 14. Only DUE bill may continue
     // =========================================
 
     if (
-      billData.state !==
-      "due"
+      billState !== "due"
     ) {
       console.error(
         "Unexpected Billplz State:",
-        billData.state
+        billState
       );
 
       return NextResponse.json(
@@ -553,7 +513,7 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 14. Delete DUE Billplz bill
+    // 15. Delete DUE Billplz bill FIRST
     // =========================================
 
     const deleteResponse =
@@ -562,8 +522,7 @@ export async function POST(request: Request) {
           order.billplz_bill_id
         )}`,
         {
-          method:
-            "DELETE",
+          method: "DELETE",
           headers: {
             Authorization:
               `Basic ${billplzAuthorization}`,
@@ -576,26 +535,18 @@ export async function POST(request: Request) {
     if (
       !deleteResponse.ok
     ) {
-      let deleteError:
-        unknown = null;
-
-      try {
-        deleteError =
-          await deleteResponse.json();
-      } catch {
-        deleteError =
-          await deleteResponse.text();
-      }
+      const deleteText =
+        await deleteResponse.text();
 
       console.error(
         "Billplz Delete Bill Error:",
-        deleteError
+        deleteText
       );
 
       /*
-        IMPORTANT:
-        Never release stock when
-        Bill deletion failed.
+        Critical safety rule:
+        If Billplz bill was NOT successfully
+        deleted, stock stays reserved.
       */
 
       return NextResponse.json(
@@ -610,66 +561,46 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 15. Release reserved stock
+    // 16. Bill deleted successfully
+    // Atomically release stock + expire order
     // =========================================
 
     const {
-      data: releaseResult,
-      error: releaseError,
+      data: expireResult,
+      error: expireError,
     } =
       await supabaseAdmin.rpc(
-        "release_order_stock",
+        "expire_order_reservation",
         {
           p_order_id:
             orderId,
         }
       );
 
-    if (releaseError) {
+    if (
+      expireError
+    ) {
       console.error(
-        "Release Stock Error:",
-        releaseError
-      );
-
-      return NextResponse.json(
+        "Atomic Expire Error:",
         {
-          error:
-            "Bill was expired but stock could not be released",
-        },
-        {
-          status: 500,
+          orderId,
+          message:
+            expireError.message,
         }
       );
-    }
 
-    // =========================================
-    // 16. Mark local order expired
-    // =========================================
+      /*
+        Bill is already deleted.
 
-    const {
-      error: statusError,
-    } =
-      await supabaseAdmin
-        .from("orders")
-        .update({
-          payment_status:
-            "expired",
-        })
-        .eq(
-          "id",
-          orderId
-        );
-
-    if (statusError) {
-      console.error(
-        "Expire Order Status Error:",
-        statusError
-      );
+        Returning 500 is correct because
+        the operation needs to be retried.
+        The RPC is idempotent.
+      */
 
       return NextResponse.json(
         {
           error:
-            "Stock was released but order status could not be updated",
+            "Bill was expired but stock reservation could not be released",
         },
         {
           status: 500,
@@ -686,7 +617,7 @@ export async function POST(request: Request) {
       expired: true,
       billDeleted: true,
       stockReleased: true,
-      releaseResult,
+      expireResult,
     });
   } catch (error) {
     console.error(

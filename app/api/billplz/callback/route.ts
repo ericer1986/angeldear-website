@@ -102,7 +102,7 @@ export async function POST(
     }
 
     /*
-      Do not log x_signature or secrets.
+      Never log x_signature or secrets.
     */
     console.log(
       "Billplz callback received:",
@@ -231,6 +231,8 @@ export async function POST(
           id,
           payment_status,
           billplz_bill_id,
+          stock_reserved_at,
+          stock_released_at,
           stock_deducted_at
         `)
         .eq(
@@ -297,130 +299,89 @@ export async function POST(
     }
 
     // ========================================
-    // 6. Mark payment as PAID
+    // 6. Normalize Billplz payment time
     // ========================================
 
-    if (
-      order.payment_status !==
-      "paid"
-    ) {
-      let paymentDate =
-        new Date().toISOString();
+    let paymentDate =
+      new Date().toISOString();
 
-      if (paidAt) {
-        const parsedDate =
-          new Date(paidAt);
-
-        if (
-          !Number.isNaN(
-            parsedDate.getTime()
-          )
-        ) {
-          paymentDate =
-            parsedDate.toISOString();
-        }
-      }
-
-      const {
-        error:
-          paymentUpdateError,
-      } =
-        await supabaseAdmin
-          .from("orders")
-          .update({
-            payment_status:
-              "paid",
-            paid_at:
-              paymentDate,
-          })
-          .eq(
-            "id",
-            order.id
-          );
+    if (paidAt) {
+      const parsedDate =
+        new Date(paidAt);
 
       if (
-        paymentUpdateError
+        !Number.isNaN(
+          parsedDate.getTime()
+        )
       ) {
-        console.error(
-          "Payment Update Error:",
-          paymentUpdateError
-        );
-
-        return NextResponse.json(
-          {
-            error:
-              "Unable to update payment status",
-          },
-          {
-            status: 500,
-          }
-        );
+        paymentDate =
+          parsedDate.toISOString();
       }
-
-      console.log(
-        `Order ${order.id} marked as PAID`
-      );
-    } else {
-      console.log(
-        `Order ${order.id} was already PAID`
-      );
     }
 
     // ========================================
-    // 7. Atomic stock deduction
+    // 7. ATOMIC PAYMENT PROCESSING
     //
-    // PostgreSQL function handles:
+    // PostgreSQL now handles:
     //
-    // - order locking
+    // - order row locking
+    // - payment_status = paid
+    // - paid_at
+    // - reservation -> sold
     // - duplicate callback protection
-    // - product locking
-    // - stock validation
-    // - multi-product deduction
-    // - transaction rollback
+    // - legacy stock deduction
     // - stock_deducted_at
+    // - transaction rollback
+    //
+    // All in ONE transaction.
     // ========================================
 
     const {
-      data: stockResult,
-      error: stockError,
+      data: paymentResult,
+      error: paymentError,
     } =
       await supabaseAdmin.rpc(
-        "deduct_order_stock",
+        "complete_paid_order",
         {
           p_order_id:
             order.id,
+          p_paid_at:
+            paymentDate,
         }
       );
 
-    if (stockError) {
+    if (paymentError) {
       console.error(
-        "Atomic Stock Deduction Error:",
+        "Atomic Payment Processing Error:",
         {
           orderId:
             order.id,
+          billId,
           message:
-            stockError.message,
+            paymentError.message,
           code:
-            stockError.code,
+            paymentError.code,
           details:
-            stockError.details,
+            paymentError.details,
           hint:
-            stockError.hint,
+            paymentError.hint,
         }
       );
 
       /*
-        Payment has already succeeded.
+        Billplz payment has already happened.
 
-        Return HTTP 500 so Billplz can retry
-        the callback. Because the RPC is
-        transactional and idempotent, retrying
-        will not double-deduct completed stock.
+        Return HTTP 500 so Billplz can retry.
+
+        complete_paid_order() is transactional
+        and idempotent, therefore retries cannot
+        double-process a completed order.
       */
+
       return NextResponse.json(
         {
           error:
-            "Payment recorded but stock processing failed",
+            "Payment received but order processing failed",
         },
         {
           status: 500,
@@ -429,13 +390,18 @@ export async function POST(
     }
 
     console.log(
-      "Atomic stock processing completed:",
+      "Atomic payment processing completed:",
       {
         orderId:
           order.id,
-        alreadyDeducted:
-          stockResult
-            ?.already_deducted ??
+        billId,
+        alreadyCompleted:
+          paymentResult
+            ?.already_completed ??
+          false,
+        usedReservation:
+          paymentResult
+            ?.used_reservation ??
           false,
       }
     );
@@ -453,9 +419,13 @@ export async function POST(
         "paid",
       stockDeducted:
         true,
-      alreadyDeducted:
-        stockResult
-          ?.already_deducted ??
+      alreadyCompleted:
+        paymentResult
+          ?.already_completed ??
+        false,
+      usedReservation:
+        paymentResult
+          ?.used_reservation ??
         false,
     });
   } catch (error) {
