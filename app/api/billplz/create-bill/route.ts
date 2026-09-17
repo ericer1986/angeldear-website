@@ -1,8 +1,17 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-type ExpireBody = {
+type CreateBillBody = {
   orderId?: string;
+};
+
+type BillplzResponse = {
+  id?: string;
+  url?: string;
+  state?: string;
+  amount?: number;
+  paid?: boolean;
+  error?: unknown;
 };
 
 export async function POST(request: Request) {
@@ -46,6 +55,11 @@ export async function POST(request: Request) {
       userError ||
       !userData.user
     ) {
+      console.error(
+        "Create Bill Auth Error:",
+        userError
+      );
+
       return NextResponse.json(
         {
           error:
@@ -65,7 +79,7 @@ export async function POST(request: Request) {
     // =========================================
 
     const body =
-      (await request.json()) as ExpireBody;
+      (await request.json()) as CreateBillBody;
 
     const orderId =
       body.orderId;
@@ -73,8 +87,7 @@ export async function POST(request: Request) {
     if (!orderId) {
       return NextResponse.json(
         {
-          error:
-            "Order ID is required",
+          error: "Order ID is required",
         },
         {
           status: 400,
@@ -89,11 +102,15 @@ export async function POST(request: Request) {
     const secretKey =
       process.env.BILLPLZ_SECRET_KEY;
 
+    const collectionId =
+      process.env.BILLPLZ_COLLECTION_ID;
+
     const apiUrl =
       process.env.BILLPLZ_API_URL;
 
     if (
       !secretKey ||
+      !collectionId ||
       !apiUrl
     ) {
       console.error(
@@ -111,15 +128,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const billplzAuthorization =
-      Buffer.from(
-        `${secretKey}:`
-      ).toString(
-        "base64"
-      );
-
     // =========================================
-    // 4. Load order
+    // 4. Load trusted order from database
     // =========================================
 
     const {
@@ -131,6 +141,10 @@ export async function POST(request: Request) {
         .select(`
           id,
           user_id,
+          customer_name,
+          email,
+          phone,
+          total,
           payment_status,
           billplz_bill_id,
           stock_reserved_at,
@@ -146,7 +160,7 @@ export async function POST(request: Request) {
 
     if (orderError) {
       console.error(
-        "Expire Order Lookup Error:",
+        "Create Bill Order Lookup Error:",
         orderError
       );
 
@@ -164,8 +178,7 @@ export async function POST(request: Request) {
     if (!order) {
       return NextResponse.json(
         {
-          error:
-            "Order not found",
+          error: "Order not found",
         },
         {
           status: 404,
@@ -174,18 +187,17 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 5. Verify ownership
+    // 5. Verify order ownership
     // =========================================
 
     if (
       !order.user_id ||
-      order.user_id !==
-        currentUser.id
+      order.user_id !== currentUser.id
     ) {
       return NextResponse.json(
         {
           error:
-            "You are not authorized to manage this order",
+            "You are not authorized to pay for this order",
         },
         {
           status: 403,
@@ -194,25 +206,45 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 6. Already paid
+    // 6. Order must not already be paid
     // =========================================
 
     if (
-      order.payment_status ===
-      "paid"
+      order.payment_status === "paid"
     ) {
       return NextResponse.json(
         {
-          success: true,
-          expired: false,
-          reason:
-            "ORDER_ALREADY_PAID",
+          error:
+            "This order has already been paid",
+        },
+        {
+          status: 409,
         }
       );
     }
 
     // =========================================
-    // 7. Reservation validation
+    // 7. Block expired / failed / refunded
+    // =========================================
+
+    if (
+      order.payment_status === "expired" ||
+      order.payment_status === "failed" ||
+      order.payment_status === "refunded"
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "This order is no longer available for payment",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    // =========================================
+    // 8. Reservation must exist
     // =========================================
 
     if (
@@ -222,7 +254,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error:
-            "This order does not have a stock reservation",
+            "This order does not have an active stock reservation",
         },
         {
           status: 409,
@@ -230,52 +262,61 @@ export async function POST(request: Request) {
       );
     }
 
-    if (
-      order.stock_deducted_at
-    ) {
-      return NextResponse.json(
-        {
-          success: true,
-          expired: false,
-          reason:
-            "STOCK_ALREADY_SOLD",
-        }
-      );
-    }
+    // =========================================
+    // 9. Released stock cannot be paid
+    // =========================================
 
-    if (
-      order.stock_released_at
-    ) {
+    if (order.stock_released_at) {
       return NextResponse.json(
         {
-          success: true,
-          expired: true,
-          alreadyReleased: true,
+          error:
+            "This order reservation has already expired",
+        },
+        {
+          status: 409,
         }
       );
     }
 
     // =========================================
-    // 8. Reservation must actually be expired
+    // 10. Sold stock means payment completed
     // =========================================
 
-    const expiresAt =
+    if (order.stock_deducted_at) {
+      return NextResponse.json(
+        {
+          error:
+            "This order has already been completed",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    // =========================================
+    // 11. Reservation must still be active
+    // =========================================
+
+    const reservationExpiresAt =
       new Date(
         order.stock_reservation_expires_at
       ).getTime();
 
     if (
-      !Number.isFinite(expiresAt)
+      !Number.isFinite(
+        reservationExpiresAt
+      )
     ) {
       console.error(
-        "Invalid Reservation Expiry:",
+        "Invalid reservation expiry:",
         orderId
       );
 
       return NextResponse.json(
         {
           error:
-            "Invalid reservation expiry",
+            "Invalid stock reservation",
         },
         {
           status: 500,
@@ -284,267 +325,13 @@ export async function POST(request: Request) {
     }
 
     if (
-      Date.now() <
-      expiresAt
+      Date.now() >=
+      reservationExpiresAt
     ) {
-      return NextResponse.json(
-        {
-          success: true,
-          expired: false,
-          reason:
-            "RESERVATION_STILL_ACTIVE",
-          expiresAt:
-            order.stock_reservation_expires_at,
-        }
-      );
-    }
-
-    // =========================================
-    // 9. Bill must exist before releasing stock
-    // =========================================
-
-    if (
-      !order.billplz_bill_id
-    ) {
-      /*
-        No Billplz bill exists.
-
-        Since no payment bill exists,
-        the reservation can be released.
-      */
-
-      const {
-        data: releaseResult,
-        error: releaseError,
-      } =
-        await supabaseAdmin.rpc(
-          "release_order_stock",
-          {
-            p_order_id:
-              orderId,
-          }
-        );
-
-      if (releaseError) {
-        console.error(
-          "Release Stock Error:",
-          releaseError
-        );
-
-        return NextResponse.json(
-          {
-            error:
-              "Unable to release reserved stock",
-          },
-          {
-            status: 500,
-          }
-        );
-      }
-
-      const {
-        error: statusError,
-      } =
-        await supabaseAdmin
-          .from("orders")
-          .update({
-            payment_status:
-              "expired",
-          })
-          .eq(
-            "id",
-            orderId
-          )
-          .eq(
-            "user_id",
-            currentUser.id
-          );
-
-      if (statusError) {
-        console.error(
-          "Expire Status Update Error:",
-          statusError
-        );
-
-        return NextResponse.json(
-          {
-            error:
-              "Stock was released but order status could not be updated",
-          },
-          {
-            status: 500,
-          }
-        );
-      }
-
-      return NextResponse.json({
-        success: true,
-        expired: true,
-        billDeleted: false,
-        stockReleased: true,
-        releaseResult,
-      });
-    }
-
-    // =========================================
-    // 10. Get latest Billplz bill state
-    // =========================================
-
-    const billResponse =
-      await fetch(
-        `${apiUrl}/bills/${encodeURIComponent(
-          order.billplz_bill_id
-        )}`,
-        {
-          method: "GET",
-          headers: {
-            Authorization:
-              `Basic ${billplzAuthorization}`,
-          },
-          cache:
-            "no-store",
-        }
-      );
-
-    const billData =
-      await billResponse.json();
-
-    if (!billResponse.ok) {
-      console.error(
-        "Billplz Get Bill Error:",
-        billData
-      );
-
       return NextResponse.json(
         {
           error:
-            "Unable to verify payment status with Billplz",
-        },
-        {
-          status: 502,
-        }
-      );
-    }
-
-    // =========================================
-    // 11. Billplz says PAID
-    // Do NOT release stock
-    // =========================================
-
-    if (
-      billData.paid === true ||
-      billData.state === "paid"
-    ) {
-      /*
-        Callback may simply be delayed.
-
-        Never release inventory here.
-        Callback remains the source of truth
-        for final paid processing.
-      */
-
-      return NextResponse.json({
-        success: true,
-        expired: false,
-        reason:
-          "BILL_ALREADY_PAID",
-      });
-    }
-
-    // =========================================
-    // 12. Handle already deleted Bill
-    // =========================================
-
-    if (
-      billData.state ===
-      "deleted"
-    ) {
-      const {
-        data: releaseResult,
-        error: releaseError,
-      } =
-        await supabaseAdmin.rpc(
-          "release_order_stock",
-          {
-            p_order_id:
-              orderId,
-          }
-        );
-
-      if (releaseError) {
-        console.error(
-          "Release Deleted Bill Stock Error:",
-          releaseError
-        );
-
-        return NextResponse.json(
-          {
-            error:
-              "Unable to release reserved stock",
-          },
-          {
-            status: 500,
-          }
-        );
-      }
-
-      const {
-        error: statusError,
-      } =
-        await supabaseAdmin
-          .from("orders")
-          .update({
-            payment_status:
-              "expired",
-          })
-          .eq(
-            "id",
-            orderId
-          );
-
-      if (statusError) {
-        console.error(
-          "Deleted Bill Status Error:",
-          statusError
-        );
-
-        return NextResponse.json(
-          {
-            error:
-              "Stock was released but order status could not be updated",
-          },
-          {
-            status: 500,
-          }
-        );
-      }
-
-      return NextResponse.json({
-        success: true,
-        expired: true,
-        billDeleted: true,
-        stockReleased: true,
-        releaseResult,
-      });
-    }
-
-    // =========================================
-    // 13. Only DUE bill may be deleted
-    // =========================================
-
-    if (
-      billData.state !==
-      "due"
-    ) {
-      console.error(
-        "Unexpected Billplz State:",
-        billData.state
-      );
-
-      return NextResponse.json(
-        {
-          error:
-            "Unexpected Billplz bill state",
+            "Your stock reservation has expired. Please place a new order.",
         },
         {
           status: 409,
@@ -553,55 +340,178 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 14. Delete DUE Billplz bill
+    // 12. Prevent duplicate Billplz bills
     // =========================================
 
-    const deleteResponse =
-      await fetch(
-        `${apiUrl}/bills/${encodeURIComponent(
-          order.billplz_bill_id
-        )}`,
+    if (order.billplz_bill_id) {
+      return NextResponse.json(
         {
-          method:
-            "DELETE",
-          headers: {
-            Authorization:
-              `Basic ${billplzAuthorization}`,
-          },
-          cache:
-            "no-store",
+          error:
+            "A payment bill already exists for this order",
+        },
+        {
+          status: 409,
         }
       );
+    }
+
+    // =========================================
+    // 13. Validate trusted order data
+    // =========================================
+
+    const total =
+      Number(order.total);
 
     if (
-      !deleteResponse.ok
+      !Number.isFinite(total) ||
+      total <= 0
     ) {
-      let deleteError:
-        unknown = null;
-
-      try {
-        deleteError =
-          await deleteResponse.json();
-      } catch {
-        deleteError =
-          await deleteResponse.text();
-      }
-
       console.error(
-        "Billplz Delete Bill Error:",
-        deleteError
+        "Invalid order total:",
+        {
+          orderId,
+          total:
+            order.total,
+        }
       );
-
-      /*
-        IMPORTANT:
-        Never release stock when
-        Bill deletion failed.
-      */
 
       return NextResponse.json(
         {
           error:
-            "Unable to expire Billplz bill",
+            "Invalid order total",
+        },
+        {
+          status: 500,
+        }
+      );
+    }
+
+    if (
+      !order.customer_name ||
+      !order.email ||
+      !order.phone
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Customer information is incomplete",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    // Billplz uses cents.
+    const amount =
+      Math.round(
+        total * 100
+      );
+
+    // =========================================
+    // 14. Build callback + redirect URLs
+    // =========================================
+
+    const requestUrl =
+      new URL(request.url);
+
+    const origin =
+      requestUrl.origin;
+
+    const callbackUrl =
+      `${origin}/api/billplz/callback`;
+
+    const redirectUrl =
+      `${origin}/order-success?order=${encodeURIComponent(
+        orderId
+      )}`;
+
+    // =========================================
+    // 15. Create Billplz Bill
+    // =========================================
+
+    const billResponse =
+      await fetch(
+        `${apiUrl}/bills`,
+        {
+          method: "POST",
+
+          headers: {
+            Authorization:
+              `Basic ${Buffer.from(
+                `${secretKey}:`
+              ).toString("base64")}`,
+
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            collection_id:
+              collectionId,
+
+            email:
+              order.email,
+
+            mobile:
+              order.phone,
+
+            name:
+              order.customer_name,
+
+            amount,
+
+            callback_url:
+              callbackUrl,
+
+            redirect_url:
+              redirectUrl,
+
+            description:
+              `Angel Dear Order ${orderId}`,
+          }),
+
+          cache: "no-store",
+        }
+      );
+
+    let billData:
+      BillplzResponse;
+
+    try {
+      billData =
+        (await billResponse.json()) as BillplzResponse;
+    } catch {
+      console.error(
+        "Invalid Billplz Create Bill Response"
+      );
+
+      return NextResponse.json(
+        {
+          error:
+            "Invalid response from Billplz",
+        },
+        {
+          status: 502,
+        }
+      );
+    }
+
+    if (!billResponse.ok) {
+      console.error(
+        "Billplz Create Bill Error:",
+        {
+          status:
+            billResponse.status,
+          error:
+            billData.error,
+        }
+      );
+
+      return NextResponse.json(
+        {
+          error:
+            "Unable to create Billplz payment bill",
         },
         {
           status: 502,
@@ -610,66 +520,76 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 15. Release reserved stock
+    // 16. Billplz must return ID + URL
     // =========================================
 
-    const {
-      data: releaseResult,
-      error: releaseError,
-    } =
-      await supabaseAdmin.rpc(
-        "release_order_stock",
-        {
-          p_order_id:
-            orderId,
-        }
-      );
-
-    if (releaseError) {
+    if (
+      !billData.id ||
+      !billData.url
+    ) {
       console.error(
-        "Release Stock Error:",
-        releaseError
+        "Billplz response missing bill information:",
+        {
+          hasId:
+            Boolean(
+              billData.id
+            ),
+          hasUrl:
+            Boolean(
+              billData.url
+            ),
+          state:
+            billData.state,
+        }
       );
 
       return NextResponse.json(
         {
           error:
-            "Bill was expired but stock could not be released",
+            "Billplz did not return a valid payment link",
         },
         {
-          status: 500,
+          status: 502,
         }
       );
     }
 
     // =========================================
-    // 16. Mark local order expired
+    // 17. Save Billplz Bill ID
     // =========================================
 
     const {
-      error: statusError,
+      error: saveBillError,
     } =
       await supabaseAdmin
         .from("orders")
         .update({
-          payment_status:
-            "expired",
+          billplz_bill_id:
+            billData.id,
         })
         .eq(
           "id",
           orderId
+        )
+        .eq(
+          "user_id",
+          currentUser.id
+        )
+        .is(
+          "billplz_bill_id",
+          null
         );
 
-    if (statusError) {
+    if (saveBillError) {
       console.error(
-        "Expire Order Status Error:",
-        statusError
+        "Save Billplz Bill ID Error:",
+        saveBillError
       );
 
       return NextResponse.json(
         {
           error:
-            "Stock was released but order status could not be updated",
+            "Payment bill was created but could not be linked to the order",
         },
         {
           status: 500,
@@ -678,26 +598,37 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 17. Success
+    // 18. Return payment URL to Checkout
     // =========================================
 
     return NextResponse.json({
       success: true,
-      expired: true,
-      billDeleted: true,
-      stockReleased: true,
-      releaseResult,
+
+      orderId,
+
+      billId:
+        billData.id,
+
+      billUrl:
+        billData.url,
+
+      state:
+        billData.state,
+
+      amount:
+        billData.amount ??
+        amount,
     });
   } catch (error) {
     console.error(
-      "Expire Order Error:",
+      "Create Bill Error:",
       error
     );
 
     return NextResponse.json(
       {
         error:
-          "Something went wrong while expiring the order",
+          "Something went wrong while creating the payment bill",
       },
       {
         status: 500,
