@@ -192,9 +192,7 @@ function OrderProgress({
   }
 
   const currentStep =
-    orderSteps.indexOf(
-      orderStatus
-    );
+    orderSteps.indexOf(orderStatus);
 
   const steps = [
     {
@@ -263,9 +261,7 @@ function OrderProgress({
                 </p>
 
                 <p className="mt-1 hidden text-xs text-gray-400 sm:block">
-                  {
-                    step.description
-                  }
+                  {step.description}
                 </p>
               </div>
             );
@@ -326,6 +322,18 @@ export default function CustomerOrderDetailsPage() {
   const [
     errorMessage,
     setErrorMessage,
+  ] =
+    useState("");
+
+  const [
+    expiring,
+    setExpiring,
+  ] =
+    useState(false);
+
+  const [
+    expireMessage,
+    setExpireMessage,
   ] =
     useState("");
 
@@ -471,6 +479,128 @@ export default function CustomerOrderDetailsPage() {
     }
   }, [orderId, router]);
 
+  async function handleExpireTest() {
+    if (!order) {
+      return;
+    }
+
+    setExpiring(true);
+    setExpireMessage("");
+
+    try {
+      const {
+        data: {
+          session,
+        },
+      } =
+        await supabase.auth.getSession();
+
+      if (!session) {
+        router.replace(
+          "/login"
+        );
+        return;
+      }
+
+      const response =
+        await fetch(
+          "/api/orders/expire",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+              Authorization:
+                `Bearer ${session.access_token}`,
+            },
+            body:
+              JSON.stringify({
+                orderId:
+                  order.id,
+              }),
+          }
+        );
+
+      const data =
+        await response.json();
+
+      console.log(
+        "Expire API Response:",
+        data
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          data.error ||
+            "Unable to expire order."
+        );
+      }
+
+      setExpireMessage(
+        "Reservation expired successfully. Stock has been released."
+      );
+
+      const {
+        data:
+          refreshedOrder,
+        error:
+          refreshError,
+      } =
+        await supabase
+          .from("orders")
+          .select(`
+            id,
+            user_id,
+            customer_name,
+            email,
+            phone,
+            address,
+            city,
+            postcode,
+            subtotal,
+            shipping,
+            total,
+            payment_status,
+            order_status,
+            created_at
+          `)
+          .eq(
+            "id",
+            order.id
+          )
+          .maybeSingle();
+
+      if (refreshError) {
+        console.error(
+          "Refresh Order Error:",
+          refreshError
+        );
+      }
+
+      if (
+        refreshedOrder
+      ) {
+        setOrder(
+          refreshedOrder as Order
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Expire Test Error:",
+        error
+      );
+
+      setExpireMessage(
+        error instanceof
+          Error
+          ? error.message
+          : "Unable to expire order."
+      );
+    } finally {
+      setExpiring(false);
+    }
+  }
+
   if (loading) {
     return (
       <main className="min-h-screen bg-[#FAF8F6] py-16">
@@ -573,7 +703,9 @@ export default function CustomerOrderDetailsPage() {
                 RM{" "}
                 {Number(
                   order.total
-                ).toFixed(2)}
+                ).toFixed(
+                  2
+                )}
               </p>
             </div>
           </div>
@@ -764,7 +896,9 @@ export default function CustomerOrderDetailsPage() {
                 RM{" "}
                 {Number(
                   order.subtotal
-                ).toFixed(2)}
+                ).toFixed(
+                  2
+                )}
               </span>
             </div>
 
@@ -795,11 +929,54 @@ export default function CustomerOrderDetailsPage() {
                 RM{" "}
                 {Number(
                   order.total
-                ).toFixed(2)}
+                ).toFixed(
+                  2
+                )}
               </span>
             </div>
           </div>
         </div>
+
+        {/* Temporary Expire Reservation Test */}
+
+        {order.payment_status ===
+          "pending" && (
+          <div className="mt-6 rounded-3xl border border-yellow-200 bg-yellow-50 p-8">
+            <h2 className="text-xl font-semibold text-[#38435A]">
+              Reservation Expiry Test
+            </h2>
+
+            <p className="mt-2 text-sm text-gray-600">
+              Temporary development
+              button for testing
+              expired stock
+              reservations.
+            </p>
+
+            <button
+              type="button"
+              onClick={
+                handleExpireTest
+              }
+              disabled={
+                expiring
+              }
+              className="mt-5 rounded-full bg-[#38435A] px-7 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {expiring
+                ? "Expiring..."
+                : "Expire Reservation Test"}
+            </button>
+
+            {expireMessage && (
+              <p className="mt-4 text-sm font-medium text-[#38435A]">
+                {
+                  expireMessage
+                }
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Continue Shopping */}
 
