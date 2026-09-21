@@ -2,6 +2,15 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
+type PaymentResult = {
+  success?: boolean;
+  already_completed?: boolean;
+  used_reservation?: boolean;
+  recovered_stock?: boolean;
+  requires_manual_review?: boolean;
+  reason?: string;
+};
+
 function verifyBillplzSignature(
   params: Record<string, string>,
   receivedSignature: string,
@@ -16,6 +25,10 @@ function verifyBillplzSignature(
        case-insensitive
     4. Join using |
     5. HMAC-SHA256 with X Signature Key
+
+    IMPORTANT:
+    This signature logic is already tested
+    and must not be changed.
   */
 
   const sourceString = Object.entries(params)
@@ -104,6 +117,7 @@ export async function POST(
     /*
       Never log x_signature or secrets.
     */
+
     console.log(
       "Billplz callback received:",
       {
@@ -233,7 +247,9 @@ export async function POST(
           billplz_bill_id,
           stock_reserved_at,
           stock_released_at,
-          stock_deducted_at
+          stock_deducted_at,
+          payment_exception,
+          payment_exception_at
         `)
         .eq(
           "billplz_bill_id",
@@ -295,6 +311,9 @@ export async function POST(
           Boolean(
             order.stock_deducted_at
           ),
+        paymentException:
+          order.payment_exception ??
+          null,
       });
     }
 
@@ -322,22 +341,22 @@ export async function POST(
     // ========================================
     // 7. ATOMIC PAYMENT PROCESSING
     //
-    // PostgreSQL now handles:
+    // PostgreSQL handles:
     //
     // - order row locking
-    // - payment_status = paid
-    // - paid_at
-    // - reservation -> sold
+    // - normal reserved payment
     // - duplicate callback protection
     // - legacy stock deduction
-    // - stock_deducted_at
-    // - transaction rollback
+    // - paid-after-release recovery
+    // - inventory re-acquisition
+    // - manual review exception
     //
-    // All in ONE transaction.
+    // All critical database changes happen
+    // inside complete_paid_order().
     // ========================================
 
     const {
-      data: paymentResult,
+      data: rawPaymentResult,
       error: paymentError,
     } =
       await supabaseAdmin.rpc(
@@ -369,13 +388,13 @@ export async function POST(
       );
 
       /*
-        Billplz payment has already happened.
+        An unexpected database / processing
+        failure occurred.
 
-        Return HTTP 500 so Billplz can retry.
+        Return HTTP 500 so Billplz may retry.
 
-        complete_paid_order() is transactional
-        and idempotent, therefore retries cannot
-        double-process a completed order.
+        complete_paid_order() is designed
+        to be transactional and idempotent.
       */
 
       return NextResponse.json(
@@ -389,6 +408,98 @@ export async function POST(
       );
     }
 
+    const paymentResult =
+      (rawPaymentResult ??
+        {}) as PaymentResult;
+
+    // ========================================
+    // 8. Manual review case
+    //
+    // Payment is real, but inventory could
+    // not safely be completed automatically.
+    //
+    // IMPORTANT:
+    // Return HTTP 200.
+    //
+    // Retrying the Billplz callback will not
+    // magically restore inventory and could
+    // create unnecessary repeated callbacks.
+    // ========================================
+
+    if (
+      paymentResult
+        .requires_manual_review
+    ) {
+      console.error(
+        "PAYMENT REQUIRES MANUAL REVIEW:",
+        {
+          orderId:
+            order.id,
+          billId,
+          reason:
+            paymentResult.reason ??
+            "UNKNOWN_PAYMENT_EXCEPTION",
+        }
+      );
+
+      return NextResponse.json(
+        {
+          success: true,
+          processed: false,
+          requiresManualReview:
+            true,
+          orderId:
+            order.id,
+          billId,
+          paymentReceived:
+            true,
+          paymentStatus:
+            "exception",
+          stockDeducted:
+            false,
+          paymentException:
+            paymentResult.reason ??
+            "UNKNOWN_PAYMENT_EXCEPTION",
+        },
+        {
+          status: 200,
+        }
+      );
+    }
+
+    // ========================================
+    // 9. RPC returned an unexpected result
+    // ========================================
+
+    if (
+      paymentResult.success !==
+      true
+    ) {
+      console.error(
+        "Unexpected Atomic Payment Result:",
+        {
+          orderId:
+            order.id,
+          billId,
+          paymentResult,
+        }
+      );
+
+      return NextResponse.json(
+        {
+          error:
+            "Payment received but order processing returned an unexpected result",
+        },
+        {
+          status: 500,
+        }
+      );
+    }
+
+    // ========================================
+    // 10. Payment successfully completed
+    // ========================================
+
     console.log(
       "Atomic payment processing completed:",
       {
@@ -397,21 +508,26 @@ export async function POST(
         billId,
         alreadyCompleted:
           paymentResult
-            ?.already_completed ??
+            .already_completed ??
           false,
         usedReservation:
           paymentResult
-            ?.used_reservation ??
+            .used_reservation ??
+          false,
+        recoveredStock:
+          paymentResult
+            .recovered_stock ??
           false,
       }
     );
 
     // ========================================
-    // 8. Callback completed successfully
+    // 11. Callback completed successfully
     // ========================================
 
     return NextResponse.json({
       success: true,
+      processed: true,
       orderId:
         order.id,
       billId,
@@ -421,11 +537,17 @@ export async function POST(
         true,
       alreadyCompleted:
         paymentResult
-          ?.already_completed ??
+          .already_completed ??
         false,
       usedReservation:
         paymentResult
-          ?.used_reservation ??
+          .used_reservation ??
+        false,
+      recoveredStock:
+        paymentResult
+          .recovered_stock ??
+        false,
+      requiresManualReview:
         false,
     });
   } catch (error) {
