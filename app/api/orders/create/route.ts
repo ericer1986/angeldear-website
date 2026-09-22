@@ -1,6 +1,34 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
+const MALAYSIA_STATES = [
+  "Johor",
+  "Kedah",
+  "Kelantan",
+  "Melaka",
+  "Negeri Sembilan",
+  "Pahang",
+  "Penang",
+  "Perak",
+  "Perlis",
+  "Sabah",
+  "Sarawak",
+  "Selangor",
+  "Terengganu",
+  "Kuala Lumpur",
+  "Labuan",
+  "Putrajaya",
+] as const;
+
+const EAST_MALAYSIA_STATES = [
+  "Sabah",
+  "Sarawak",
+] as const;
+
+const FREE_SHIPPING_THRESHOLD = 300;
+const WEST_MALAYSIA_SHIPPING = 8;
+const EAST_MALAYSIA_SHIPPING = 18;
+
 type CheckoutItem = {
   productId: string;
   quantity: number;
@@ -12,6 +40,7 @@ type CheckoutBody = {
   phone?: string;
   address?: string;
   city?: string;
+  state?: string;
   postcode?: string;
   items?: CheckoutItem[];
 };
@@ -95,6 +124,9 @@ export async function POST(request: Request) {
     const city =
       body.city?.trim();
 
+    const state =
+      body.state?.trim();
+
     const postcode =
       body.postcode?.trim();
 
@@ -107,12 +139,34 @@ export async function POST(request: Request) {
       !phone ||
       !address ||
       !city ||
+      !state ||
       !postcode
     ) {
       return NextResponse.json(
         {
           error:
             "Please fill in all required fields.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    // =========================================
+    // 3. Validate Malaysian state
+    // =========================================
+
+    if (
+      !MALAYSIA_STATES.includes(
+        state as
+          (typeof MALAYSIA_STATES)[number]
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Please select a valid Malaysian state.",
         },
         {
           status: 400,
@@ -135,7 +189,7 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 3. Validate cart items
+    // 4. Validate cart items
     // =========================================
 
     for (const item of items) {
@@ -182,7 +236,7 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 4. Read REAL product data
+    // 5. Read REAL product data
     // =========================================
 
     const {
@@ -237,7 +291,7 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 5. Server calculates REAL prices
+    // 6. Server calculates REAL prices
     // =========================================
 
     let subtotal = 0;
@@ -329,9 +383,9 @@ export async function POST(request: Request) {
       }
 
       /*
-        This is an early customer-friendly check.
+        Customer-friendly early check.
 
-        The FINAL concurrency-safe stock check
+        The final concurrency-safe stock check
         happens inside reserve_order_stock().
       */
       if (
@@ -371,13 +425,31 @@ export async function POST(request: Request) {
       ) / 100;
 
     // =========================================
-    // 6. Server calculates shipping
+    // 7. Server calculates REAL shipping
     // =========================================
 
-    const shipping =
-      subtotal >= 150
-        ? 0
-        : 10;
+    const isEastMalaysia =
+      EAST_MALAYSIA_STATES.includes(
+        state as
+          (typeof EAST_MALAYSIA_STATES)[number]
+      );
+
+    let shipping: number;
+
+    if (
+      subtotal >=
+      FREE_SHIPPING_THRESHOLD
+    ) {
+      shipping = 0;
+    } else if (
+      isEastMalaysia
+    ) {
+      shipping =
+        EAST_MALAYSIA_SHIPPING;
+    } else {
+      shipping =
+        WEST_MALAYSIA_SHIPPING;
+    }
 
     const total =
       Math.round(
@@ -400,7 +472,7 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 7. Create order
+    // 8. Create order
     // =========================================
 
     const orderId =
@@ -421,6 +493,7 @@ export async function POST(request: Request) {
           phone,
           address,
           city,
+          state,
           postcode,
           subtotal,
           shipping,
@@ -449,7 +522,7 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 8. Create order items
+    // 9. Create order items
     // =========================================
 
     const finalOrderItems =
@@ -509,7 +582,8 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 9. Atomically reserve stock for 15 minutes
+    // 10. Atomically reserve stock
+    //     for 15 minutes
     // =========================================
 
     const {
@@ -541,17 +615,6 @@ export async function POST(request: Request) {
             reservationError.message,
         }
       );
-
-      /*
-        Reservation failed.
-
-        No stock was deducted because the
-        PostgreSQL function is transactional.
-
-        Remove the invalid order.
-        order_items should be removed by
-        ON DELETE CASCADE.
-      */
 
       const {
         error: cleanupError,
@@ -607,7 +670,7 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 10. Validate reservation response
+    // 11. Validate reservation response
     // =========================================
 
     if (
@@ -624,10 +687,9 @@ export async function POST(request: Request) {
       );
 
       /*
-        This should not normally happen.
-        Do NOT automatically delete the order
-        here because we cannot safely assume
-        whether stock was reserved.
+        Do not automatically delete here.
+        We cannot safely assume whether
+        stock has already been reserved.
       */
 
       return NextResponse.json(
@@ -642,7 +704,7 @@ export async function POST(request: Request) {
     }
 
     // =========================================
-    // 11. Return SERVER calculated values
+    // 12. Return SERVER calculated values
     // =========================================
 
     return NextResponse.json({
