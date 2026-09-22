@@ -42,10 +42,7 @@ type Order = {
   payment_status: PaymentStatus;
   order_status: OrderStatus;
 
-  billplz_bill_id: string | null;
   paid_at: string | null;
-
-  stock_deducted_at: string | null;
 
   payment_exception: string | null;
   payment_exception_at: string | null;
@@ -119,7 +116,147 @@ function orderStatusClass(
   }
 }
 
-export default function AdminOrderDetailPage() {
+function getOrderMessage(
+  order: Order
+) {
+  if (
+    order.payment_status ===
+      "paid" &&
+    order.payment_exception
+  ) {
+    return {
+      title:
+        "Payment Received — Order Under Review",
+      description:
+        "We have received your payment successfully. Your order requires a short manual review before processing. Our team will review the order before fulfillment.",
+      className:
+        "border-amber-200 bg-amber-50 text-amber-800",
+    };
+  }
+
+  if (
+    order.payment_status ===
+    "pending"
+  ) {
+    return {
+      title:
+        "Payment Pending",
+      description:
+        "Your order has been created and is awaiting payment confirmation.",
+      className:
+        "border-yellow-200 bg-yellow-50 text-yellow-800",
+    };
+  }
+
+  if (
+    order.payment_status ===
+    "expired"
+  ) {
+    return {
+      title:
+        "Payment Expired",
+      description:
+        "The payment window for this order has expired. This order will not be processed.",
+      className:
+        "border-gray-200 bg-gray-50 text-gray-700",
+    };
+  }
+
+  if (
+    order.payment_status ===
+    "failed"
+  ) {
+    return {
+      title:
+        "Payment Failed",
+      description:
+        "The payment for this order was not completed successfully.",
+      className:
+        "border-red-200 bg-red-50 text-red-700",
+    };
+  }
+
+  if (
+    order.payment_status ===
+    "refunded"
+  ) {
+    return {
+      title:
+        "Payment Refunded",
+      description:
+        "The payment for this order has been refunded.",
+      className:
+        "border-blue-200 bg-blue-50 text-blue-700",
+    };
+  }
+
+  if (
+    order.order_status ===
+    "cancelled"
+  ) {
+    return {
+      title:
+        "Order Cancelled",
+      description:
+        "This order has been cancelled.",
+      className:
+        "border-red-200 bg-red-50 text-red-700",
+    };
+  }
+
+  if (
+    order.order_status ===
+    "processing"
+  ) {
+    return {
+      title:
+        "Order Processing",
+      description:
+        "Your payment has been confirmed and we are preparing your order.",
+      className:
+        "border-blue-200 bg-blue-50 text-blue-700",
+    };
+  }
+
+  if (
+    order.order_status ===
+    "shipped"
+  ) {
+    return {
+      title:
+        "Order Shipped",
+      description:
+        "Your order has been shipped and is on the way.",
+      className:
+        "border-purple-200 bg-purple-50 text-purple-700",
+    };
+  }
+
+  if (
+    order.order_status ===
+    "delivered"
+  ) {
+    return {
+      title:
+        "Order Delivered",
+      description:
+        "Your order has been marked as delivered.",
+      className:
+        "border-green-200 bg-green-50 text-green-700",
+    };
+  }
+
+  return {
+    title:
+      "Payment Confirmed",
+    description:
+      "Your payment has been confirmed. We will begin processing your order shortly.",
+    className:
+      "border-green-200 bg-green-50 text-green-700",
+  };
+}
+
+export default function CustomerOrderDetailPage() {
   const params =
     useParams();
 
@@ -152,20 +289,8 @@ export default function AdminOrderDetailPage() {
     useState(true);
 
   const [
-    updating,
-    setUpdating,
-  ] =
-    useState(false);
-
-  const [
     errorMessage,
     setErrorMessage,
-  ] =
-    useState("");
-
-  const [
-    successMessage,
-    setSuccessMessage,
   ] =
     useState("");
 
@@ -173,6 +298,12 @@ export default function AdminOrderDetailPage() {
     setLoading(true);
     setErrorMessage("");
 
+    /*
+      RLS protects this query.
+
+      Customers can only read
+      their own orders.
+    */
     const [
       orderResult,
       itemsResult,
@@ -194,9 +325,7 @@ export default function AdminOrderDetailPage() {
             total,
             payment_status,
             order_status,
-            billplz_bill_id,
             paid_at,
-            stock_deducted_at,
             payment_exception,
             payment_exception_at,
             created_at
@@ -241,8 +370,7 @@ export default function AdminOrderDetailPage() {
       );
 
       setErrorMessage(
-        orderResult.error
-          .message
+        "Unable to load this order."
       );
 
       setLoading(false);
@@ -258,8 +386,7 @@ export default function AdminOrderDetailPage() {
       );
 
       setErrorMessage(
-        itemsResult.error
-          .message
+        "Unable to load order items."
       );
 
       setLoading(false);
@@ -278,100 +405,6 @@ export default function AdminOrderDetailPage() {
     setLoading(false);
   }
 
-  async function updateOrderStatus(
-    value: OrderStatus
-  ) {
-    if (!order) {
-      return;
-    }
-
-    /*
-      Payment Exception orders require
-      manual review before fulfillment.
-    */
-    if (
-      order.payment_exception &&
-      value !== "pending" &&
-      value !== "cancelled"
-    ) {
-      setErrorMessage(
-        "This order requires manual payment review. Resolve the payment exception before fulfillment."
-      );
-
-      return;
-    }
-
-    /*
-      Prevent accidental fulfillment
-      of unpaid orders.
-
-      Cancelled is still allowed.
-    */
-    if (
-      order.payment_status !==
-        "paid" &&
-      value !== "pending" &&
-      value !== "cancelled"
-    ) {
-      setErrorMessage(
-        "This order has not been paid. Only Pending or Cancelled is allowed."
-      );
-
-      return;
-    }
-
-    setUpdating(true);
-    setErrorMessage("");
-    setSuccessMessage("");
-
-    const {
-      error,
-    } =
-      await supabase
-        .from("orders")
-        .update({
-          order_status:
-            value,
-        })
-        .eq(
-          "id",
-          order.id
-        );
-
-    if (error) {
-      console.error(
-        "Update Order Status Error:",
-        error
-      );
-
-      setErrorMessage(
-        error.message
-      );
-
-      setUpdating(false);
-      return;
-    }
-
-    setOrder({
-      ...order,
-      order_status:
-        value,
-    });
-
-    setSuccessMessage(
-      "Order status updated successfully."
-    );
-
-    setUpdating(false);
-
-    window.setTimeout(
-      () => {
-        setSuccessMessage("");
-      },
-      3000
-    );
-  }
-
   useEffect(() => {
     if (orderId) {
       loadOrder();
@@ -381,7 +414,7 @@ export default function AdminOrderDetailPage() {
   if (loading) {
     return (
       <main className="min-h-screen bg-[#FAF8F6] py-10">
-        <div className="mx-auto max-w-7xl px-6">
+        <div className="mx-auto max-w-6xl px-6">
           <div className="rounded-3xl bg-white p-10 text-center shadow-sm">
             <p className="text-gray-500">
               Loading order...
@@ -393,55 +426,42 @@ export default function AdminOrderDetailPage() {
   }
 
   if (
-    errorMessage &&
+    errorMessage ||
     !order
   ) {
     return (
       <main className="min-h-screen bg-[#FAF8F6] py-10">
-        <div className="mx-auto max-w-7xl px-6">
+        <div className="mx-auto max-w-6xl px-6">
           <button
             onClick={() =>
               router.push(
-                "/admin/orders"
+                "/account/orders"
               )
             }
             className="mb-6 text-sm text-gray-500 hover:text-[#38435A]"
           >
-            ← Back to Orders
+            ← Back to My Orders
           </button>
 
-          <div className="rounded-3xl bg-red-50 p-8 text-red-600">
-            <h1 className="text-xl font-semibold">
-              Database Error
-            </h1>
-
-            <p className="mt-2">
-              {errorMessage}
-            </p>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
-  if (!order) {
-    return (
-      <main className="min-h-screen bg-[#FAF8F6] py-10">
-        <div className="mx-auto max-w-7xl px-6">
-          <div className="rounded-3xl bg-white p-10 text-center">
+          <div className="rounded-3xl bg-white p-10 text-center shadow-sm">
             <h1 className="text-xl font-semibold text-[#38435A]">
-              Order not found
+              Order unavailable
             </h1>
+
+            <p className="mt-2 text-sm text-gray-500">
+              {errorMessage ||
+                "This order could not be found."}
+            </p>
 
             <button
               onClick={() =>
                 router.push(
-                  "/admin/orders"
+                  "/account/orders"
                 )
               }
-              className="mt-5 rounded-full bg-[#E8C9C1] px-6 py-3"
+              className="mt-6 rounded-full bg-[#E8C9C1] px-6 py-3 text-sm font-semibold text-[#38435A]"
             >
-              Back to Orders
+              Back to My Orders
             </button>
           </div>
         </div>
@@ -449,20 +469,32 @@ export default function AdminOrderDetailPage() {
     );
   }
 
+  const statusMessage =
+    getOrderMessage(
+      order
+    );
+
+  const isUnderReview =
+    order.payment_status ===
+      "paid" &&
+    Boolean(
+      order.payment_exception
+    );
+
   return (
     <main className="min-h-screen bg-[#FAF8F6] py-10">
-      <div className="mx-auto max-w-7xl px-6">
+      <div className="mx-auto max-w-6xl px-6">
         {/* Back */}
 
         <button
           onClick={() =>
             router.push(
-              "/admin/orders"
+              "/account/orders"
             )
           }
           className="mb-6 text-sm text-gray-500 hover:text-[#38435A]"
         >
-          ← Back to Orders
+          ← Back to My Orders
         </button>
 
         {/* Header */}
@@ -474,7 +506,7 @@ export default function AdminOrderDetailPage() {
             </p>
 
             <h1 className="mt-1 text-4xl font-bold text-[#38435A]">
-              Order Details
+              My Order
             </h1>
 
             <p className="mt-2 break-all font-mono text-sm text-gray-500">
@@ -482,8 +514,8 @@ export default function AdminOrderDetailPage() {
             </p>
           </div>
 
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div
+          <div className="flex flex-wrap gap-3">
+            <span
               className={`rounded-full px-5 py-3 text-sm font-semibold ${paymentStatusClass(
                 order.payment_status
               )}`}
@@ -492,178 +524,45 @@ export default function AdminOrderDetailPage() {
               {formatStatus(
                 order.payment_status
               )}
-            </div>
+            </span>
 
-            <select
-              value={
-                order.order_status
-              }
-              disabled={
-                updating
-              }
-              onChange={(e) =>
-                updateOrderStatus(
-                  e.target
-                    .value as OrderStatus
-                )
-              }
-              className="rounded-full border border-gray-200 bg-white px-5 py-3 text-sm font-medium outline-none focus:ring-2 focus:ring-[#E8C9C1] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <option value="pending">
-                Order: Pending
-              </option>
+            {!isUnderReview && (
+              <span
+                className={`rounded-full px-5 py-3 text-sm font-semibold ${orderStatusClass(
+                  order.order_status
+                )}`}
+              >
+                Order:{" "}
+                {formatStatus(
+                  order.order_status
+                )}
+              </span>
+            )}
 
-              <option value="processing">
-                Order: Processing
-              </option>
-
-              <option value="shipped">
-                Order: Shipped
-              </option>
-
-              <option value="delivered">
-                Order: Delivered
-              </option>
-
-              <option value="cancelled">
-                Order: Cancelled
-              </option>
-            </select>
+            {isUnderReview && (
+              <span className="rounded-full bg-amber-100 px-5 py-3 text-sm font-semibold text-amber-800">
+                Order: Under Review
+              </span>
+            )}
           </div>
         </div>
 
-        {/* PAYMENT EXCEPTION ALERT */}
+        {/* Customer Status Message */}
 
-        {order.payment_exception && (
-          <div className="mb-8 rounded-3xl border border-red-200 bg-red-50 p-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-red-500">
-                  Payment Exception
-                </p>
+        <div
+          className={`mb-8 rounded-3xl border p-6 ${statusMessage.className}`}
+        >
+          <h2 className="text-xl font-bold">
+            {
+              statusMessage.title
+            }
+          </h2>
 
-                <h2 className="mt-2 text-2xl font-bold text-red-700">
-                  Manual Review Required
-                </h2>
-
-                <p className="mt-3 max-w-3xl text-sm leading-6 text-red-700">
-                  Payment has been recorded,
-                  but this order encountered
-                  an inventory or payment
-                  processing exception.
-                  Do not fulfill this order
-                  until the issue has been
-                  reviewed.
-                </p>
-              </div>
-
-              <span className="w-fit rounded-full bg-red-600 px-4 py-2 text-xs font-bold text-white">
-                HOLD FULFILLMENT
-              </span>
-            </div>
-
-            <div className="mt-5 grid gap-4 rounded-2xl bg-white p-5 md:grid-cols-2">
-              <div>
-                <p className="text-xs text-gray-400">
-                  Exception Reason
-                </p>
-
-                <p className="mt-1 break-all font-mono text-sm font-semibold text-red-700">
-                  {
-                    order.payment_exception
-                  }
-                </p>
-              </div>
-
-              <div>
-                <p className="text-xs text-gray-400">
-                  Exception At
-                </p>
-
-                <p className="mt-1 text-sm font-medium text-gray-700">
-                  {order.payment_exception_at
-                    ? new Date(
-                        order.payment_exception_at
-                      ).toLocaleString(
-                        "en-MY"
-                      )
-                    : "-"}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Messages */}
-
-        {updating && (
-          <div className="mb-5 rounded-2xl bg-blue-50 px-5 py-3 text-sm text-blue-600">
-            Updating order...
-          </div>
-        )}
-
-        {successMessage && (
-          <div className="mb-5 rounded-2xl bg-green-50 px-5 py-3 text-sm text-green-700">
-            {successMessage}
-          </div>
-        )}
-
-        {errorMessage && (
-          <div className="mb-5 rounded-2xl bg-red-50 px-5 py-3 text-sm text-red-600">
-            {errorMessage}
-          </div>
-        )}
-
-        {/* Status Overview */}
-
-        <div className="mb-8 grid grid-cols-1 gap-6 md:grid-cols-2">
-          <div className="rounded-3xl bg-white p-6 shadow-sm">
-            <p className="text-sm text-gray-400">
-              Payment Status
-            </p>
-
-            <div className="mt-3">
-              <span
-                className={`inline-flex rounded-full px-4 py-2 text-sm font-semibold ${paymentStatusClass(
-                  order.payment_status
-                )}`}
-              >
-                {formatStatus(
-                  order.payment_status
-                )}
-              </span>
-            </div>
-
-            <p className="mt-4 text-xs leading-5 text-gray-400">
-              Paid status is controlled
-              by the verified Billplz
-              payment callback.
-            </p>
-          </div>
-
-          <div className="rounded-3xl bg-white p-6 shadow-sm">
-            <p className="text-sm text-gray-400">
-              Order Status
-            </p>
-
-            <div className="mt-3">
-              <span
-                className={`inline-flex rounded-full px-4 py-2 text-sm font-semibold ${orderStatusClass(
-                  order.order_status
-                )}`}
-              >
-                {formatStatus(
-                  order.order_status
-                )}
-              </span>
-            </div>
-
-            <p className="mt-4 text-xs leading-5 text-gray-400">
-              Admin can manage
-              fulfillment status after
-              payment is confirmed.
-            </p>
-          </div>
+          <p className="mt-2 max-w-3xl text-sm leading-6">
+            {
+              statusMessage.description
+            }
+          </p>
         </div>
 
         {/* Customer / Delivery / Summary */}
@@ -713,7 +612,7 @@ export default function AdminOrderDetailPage() {
             </div>
           </div>
 
-          {/* Delivery Information */}
+          {/* Delivery */}
 
           <div className="rounded-3xl bg-white p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-[#38435A]">
@@ -769,7 +668,7 @@ export default function AdminOrderDetailPage() {
             </div>
           </div>
 
-          {/* Order Summary */}
+          {/* Summary */}
 
           <div className="rounded-3xl bg-white p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-[#38435A]">
@@ -824,23 +723,28 @@ export default function AdminOrderDetailPage() {
           </div>
         </div>
 
-        {/* Payment Information */}
+        {/* Payment */}
 
         <div className="mb-8 rounded-3xl bg-white p-6 shadow-sm">
           <h2 className="text-lg font-semibold text-[#38435A]">
-            Payment Information
+            Payment
           </h2>
 
-          <div className="mt-5 grid grid-cols-1 gap-5 text-sm md:grid-cols-3">
+          <div className="mt-5 grid grid-cols-1 gap-5 text-sm md:grid-cols-2">
             <div>
               <p className="text-gray-400">
-                Billplz Bill ID
+                Payment Status
               </p>
 
-              <p className="mt-1 break-all font-mono">
-                {order.billplz_bill_id ||
-                  "-"}
-              </p>
+              <span
+                className={`mt-2 inline-flex rounded-full px-4 py-2 text-sm font-semibold ${paymentStatusClass(
+                  order.payment_status
+                )}`}
+              >
+                {formatStatus(
+                  order.payment_status
+                )}
+              </span>
             </div>
 
             <div>
@@ -848,7 +752,7 @@ export default function AdminOrderDetailPage() {
                 Paid At
               </p>
 
-              <p className="mt-1 font-medium">
+              <p className="mt-2 font-medium">
                 {order.paid_at
                   ? new Date(
                       order.paid_at
@@ -858,26 +762,19 @@ export default function AdminOrderDetailPage() {
                   : "-"}
               </p>
             </div>
-
-            <div>
-              <p className="text-gray-400">
-                Stock Deducted At
-              </p>
-
-              <p className="mt-1 font-medium">
-                {order.stock_deducted_at
-                  ? new Date(
-                      order.stock_deducted_at
-                    ).toLocaleString(
-                      "en-MY"
-                    )
-                  : "-"}
-              </p>
-            </div>
           </div>
+
+          {isUnderReview && (
+            <div className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm leading-6 text-amber-800">
+              Your payment has been
+              received. Our team is
+              reviewing your order
+              before fulfillment.
+            </div>
+          )}
         </div>
 
-        {/* Products */}
+        {/* Order Items */}
 
         <div className="overflow-hidden rounded-3xl bg-white shadow-sm">
           <div className="border-b px-6 py-5">
@@ -926,12 +823,6 @@ export default function AdminOrderDetailPage() {
                           <p className="font-medium text-[#38435A]">
                             {
                               item.product_name
-                            }
-                          </p>
-
-                          <p className="mt-1 break-all font-mono text-xs text-gray-400">
-                            {
-                              item.product_id
                             }
                           </p>
                         </td>
