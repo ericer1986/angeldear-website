@@ -29,8 +29,10 @@ type Order = {
   customer_name: string;
   email: string | null;
   phone: string | null;
+
   address: string | null;
   city: string | null;
+  state: string | null;
   postcode: string | null;
 
   subtotal: number;
@@ -42,7 +44,11 @@ type Order = {
 
   billplz_bill_id: string | null;
   paid_at: string | null;
+
   stock_deducted_at: string | null;
+
+  payment_exception: string | null;
+  payment_exception_at: string | null;
 
   created_at: string;
 };
@@ -181,6 +187,7 @@ export default function AdminOrderDetailPage() {
             phone,
             address,
             city,
+            state,
             postcode,
             subtotal,
             shipping,
@@ -190,6 +197,8 @@ export default function AdminOrderDetailPage() {
             billplz_bill_id,
             paid_at,
             stock_deducted_at,
+            payment_exception,
+            payment_exception_at,
             created_at
           `)
           .eq(
@@ -277,6 +286,22 @@ export default function AdminOrderDetailPage() {
     }
 
     /*
+      Payment Exception orders require
+      manual review before fulfillment.
+    */
+    if (
+      order.payment_exception &&
+      value !== "pending" &&
+      value !== "cancelled"
+    ) {
+      setErrorMessage(
+        "This order requires manual payment review. Resolve the payment exception before fulfillment."
+      );
+
+      return;
+    }
+
+    /*
       Prevent accidental fulfillment
       of unpaid orders.
 
@@ -341,9 +366,7 @@ export default function AdminOrderDetailPage() {
 
     window.setTimeout(
       () => {
-        setSuccessMessage(
-          ""
-        );
+        setSuccessMessage("");
       },
       3000
     );
@@ -460,8 +483,6 @@ export default function AdminOrderDetailPage() {
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            {/* Payment Status - READ ONLY */}
-
             <div
               className={`rounded-full px-5 py-3 text-sm font-semibold ${paymentStatusClass(
                 order.payment_status
@@ -473,8 +494,6 @@ export default function AdminOrderDetailPage() {
               )}
             </div>
 
-            {/* Order Status */}
-
             <select
               value={
                 order.order_status
@@ -482,9 +501,7 @@ export default function AdminOrderDetailPage() {
               disabled={
                 updating
               }
-              onChange={(
-                e
-              ) =>
+              onChange={(e) =>
                 updateOrderStatus(
                   e.target
                     .value as OrderStatus
@@ -514,6 +531,68 @@ export default function AdminOrderDetailPage() {
             </select>
           </div>
         </div>
+
+        {/* PAYMENT EXCEPTION ALERT */}
+
+        {order.payment_exception && (
+          <div className="mb-8 rounded-3xl border border-red-200 bg-red-50 p-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider text-red-500">
+                  Payment Exception
+                </p>
+
+                <h2 className="mt-2 text-2xl font-bold text-red-700">
+                  Manual Review Required
+                </h2>
+
+                <p className="mt-3 max-w-3xl text-sm leading-6 text-red-700">
+                  Payment has been recorded,
+                  but this order encountered
+                  an inventory or payment
+                  processing exception.
+                  Do not fulfill this order
+                  until the issue has been
+                  reviewed.
+                </p>
+              </div>
+
+              <span className="w-fit rounded-full bg-red-600 px-4 py-2 text-xs font-bold text-white">
+                HOLD FULFILLMENT
+              </span>
+            </div>
+
+            <div className="mt-5 grid gap-4 rounded-2xl bg-white p-5 md:grid-cols-2">
+              <div>
+                <p className="text-xs text-gray-400">
+                  Exception Reason
+                </p>
+
+                <p className="mt-1 break-all font-mono text-sm font-semibold text-red-700">
+                  {
+                    order.payment_exception
+                  }
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-400">
+                  Exception At
+                </p>
+
+                <p className="mt-1 text-sm font-medium text-gray-700">
+                  {order.payment_exception_at
+                    ? new Date(
+                        order.payment_exception_at
+                      ).toLocaleString(
+                        "en-MY"
+                      )
+                    : "-"}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Messages */}
 
@@ -556,9 +635,8 @@ export default function AdminOrderDetailPage() {
             </div>
 
             <p className="mt-4 text-xs leading-5 text-gray-400">
-              Paid status is
-              controlled by the
-              verified Billplz
+              Paid status is controlled
+              by the verified Billplz
               payment callback.
             </p>
           </div>
@@ -582,14 +660,13 @@ export default function AdminOrderDetailPage() {
 
             <p className="mt-4 text-xs leading-5 text-gray-400">
               Admin can manage
-              fulfillment status
-              after payment is
-              confirmed.
+              fulfillment status after
+              payment is confirmed.
             </p>
           </div>
         </div>
 
-        {/* Customer Information */}
+        {/* Customer / Delivery / Summary */}
 
         <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
           {/* Customer */}
@@ -636,25 +713,59 @@ export default function AdminOrderDetailPage() {
             </div>
           </div>
 
-          {/* Shipping Address */}
+          {/* Delivery Information */}
 
           <div className="rounded-3xl bg-white p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-[#38435A]">
-              Shipping Address
+              Delivery Information
             </h2>
 
-            <div className="mt-5 text-sm leading-6">
-              <p>
-                {order.address ||
-                  "-"}
-              </p>
+            <div className="mt-5 space-y-4 text-sm">
+              <div>
+                <p className="text-gray-400">
+                  Address
+                </p>
 
-              <p>
-                {order.postcode ||
-                  ""}{" "}
-                {order.city ||
-                  ""}
-              </p>
+                <p className="mt-1 font-medium leading-6">
+                  {order.address ||
+                    "-"}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-gray-400">
+                    City
+                  </p>
+
+                  <p className="mt-1 font-medium">
+                    {order.city ||
+                      "-"}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-gray-400">
+                    State
+                  </p>
+
+                  <p className="mt-1 font-medium">
+                    {order.state ||
+                      "-"}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-gray-400">
+                  Postcode
+                </p>
+
+                <p className="mt-1 font-medium">
+                  {order.postcode ||
+                    "-"}
+                </p>
+              </div>
             </div>
           </div>
 
@@ -675,9 +786,7 @@ export default function AdminOrderDetailPage() {
                   RM{" "}
                   {Number(
                     order.subtotal
-                  ).toFixed(
-                    2
-                  )}
+                  ).toFixed(2)}
                 </span>
               </div>
 
@@ -687,12 +796,15 @@ export default function AdminOrderDetailPage() {
                 </span>
 
                 <span>
-                  RM{" "}
                   {Number(
                     order.shipping
-                  ).toFixed(
-                    2
-                  )}
+                  ) === 0
+                    ? "FREE"
+                    : `RM ${Number(
+                        order.shipping
+                      ).toFixed(
+                        2
+                      )}`}
                 </span>
               </div>
 
@@ -705,9 +817,7 @@ export default function AdminOrderDetailPage() {
                   RM{" "}
                   {Number(
                     order.total
-                  ).toFixed(
-                    2
-                  )}
+                  ).toFixed(2)}
                 </span>
               </div>
             </div>
@@ -776,8 +886,7 @@ export default function AdminOrderDetailPage() {
             </h2>
           </div>
 
-          {items.length ===
-          0 ? (
+          {items.length === 0 ? (
             <div className="p-10 text-center text-gray-500">
               No items found.
             </div>
@@ -831,9 +940,7 @@ export default function AdminOrderDetailPage() {
                           RM{" "}
                           {Number(
                             item.price
-                          ).toFixed(
-                            2
-                          )}
+                          ).toFixed(2)}
                         </td>
 
                         <td className="px-6 py-5">
@@ -851,9 +958,7 @@ export default function AdminOrderDetailPage() {
                             Number(
                               item.quantity
                             )
-                          ).toFixed(
-                            2
-                          )}
+                          ).toFixed(2)}
                         </td>
                       </tr>
                     )
