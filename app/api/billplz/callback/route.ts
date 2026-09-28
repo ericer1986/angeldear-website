@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
+
 import crypto from "crypto";
+
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+
+import { sendOrderConfirmationEmail } from "@/lib/sendOrderConfirmationEmail";
+
 
 type PaymentResult = {
   success?: boolean;
@@ -10,6 +15,7 @@ type PaymentResult = {
   requires_manual_review?: boolean;
   reason?: string;
 };
+
 
 function verifyBillplzSignature(
   params: Record<string, string>,
@@ -27,6 +33,7 @@ function verifyBillplzSignature(
     5. HMAC-SHA256 with X Signature Key
 
     IMPORTANT:
+
     This signature logic is already tested
     and must not be changed.
   */
@@ -59,6 +66,7 @@ function verifyBillplzSignature(
     })
     .join("|");
 
+
   const generatedSignature = crypto
     .createHmac(
       "sha256",
@@ -67,17 +75,20 @@ function verifyBillplzSignature(
     .update(sourceString)
     .digest("hex");
 
+
   const receivedBuffer =
     Buffer.from(
       receivedSignature.toLowerCase(),
       "utf8"
     );
 
+
   const generatedBuffer =
     Buffer.from(
       generatedSignature.toLowerCase(),
       "utf8"
     );
+
 
   if (
     receivedBuffer.length !==
@@ -86,11 +97,13 @@ function verifyBillplzSignature(
     return false;
   }
 
+
   return crypto.timingSafeEqual(
     receivedBuffer,
     generatedBuffer
   );
 }
+
 
 export async function POST(
   request: Request
@@ -103,8 +116,10 @@ export async function POST(
     const formData =
       await request.formData();
 
+
     const params:
       Record<string, string> = {};
+
 
     for (
       const [key, value]
@@ -113,6 +128,7 @@ export async function POST(
       params[key] =
         String(value);
     }
+
 
     /*
       Never log x_signature or secrets.
@@ -129,6 +145,7 @@ export async function POST(
       }
     );
 
+
     // ========================================
     // 2. Verify Billplz X Signature
     // ========================================
@@ -136,9 +153,11 @@ export async function POST(
     const receivedSignature =
       params.x_signature;
 
+
     const xSignatureKey =
       process.env
         .BILLPLZ_X_SIGNATURE_KEY;
+
 
     if (!xSignatureKey) {
       console.error(
@@ -156,6 +175,7 @@ export async function POST(
       );
     }
 
+
     if (!receivedSignature) {
       console.error(
         "Billplz callback has no x_signature"
@@ -172,12 +192,14 @@ export async function POST(
       );
     }
 
+
     const isValidSignature =
       verifyBillplzSignature(
         params,
         receivedSignature,
         xSignatureKey
       );
+
 
     if (!isValidSignature) {
       console.error(
@@ -195,9 +217,11 @@ export async function POST(
       );
     }
 
+
     console.log(
       "Billplz X Signature verified"
     );
+
 
     // ========================================
     // 3. Read payment information
@@ -206,14 +230,18 @@ export async function POST(
     const billId =
       params.id;
 
+
     const paid =
       params.paid;
+
 
     const state =
       params.state;
 
+
     const paidAt =
       params.paid_at;
+
 
     if (!billId) {
       return NextResponse.json(
@@ -227,9 +255,11 @@ export async function POST(
       );
     }
 
+
     const isPaid =
       paid === "true" &&
       state === "paid";
+
 
     // ========================================
     // 4. Find Angel Dear order
@@ -257,6 +287,7 @@ export async function POST(
         )
         .maybeSingle();
 
+
     if (orderError) {
       console.error(
         "Order Lookup Error:",
@@ -274,6 +305,7 @@ export async function POST(
       );
     }
 
+
     if (!order) {
       console.error(
         "No order found for Billplz Bill:",
@@ -290,6 +322,7 @@ export async function POST(
         }
       );
     }
+
 
     // ========================================
     // 5. Ignore unpaid callbacks
@@ -317,12 +350,14 @@ export async function POST(
       });
     }
 
+
     // ========================================
     // 6. Normalize Billplz payment time
     // ========================================
 
     let paymentDate =
       new Date().toISOString();
+
 
     if (paidAt) {
       const parsedDate =
@@ -337,6 +372,7 @@ export async function POST(
           parsedDate.toISOString();
       }
     }
+
 
     // ========================================
     // 7. ATOMIC PAYMENT PROCESSING
@@ -369,6 +405,7 @@ export async function POST(
         }
       );
 
+
     if (paymentError) {
       console.error(
         "Atomic Payment Processing Error:",
@@ -386,6 +423,7 @@ export async function POST(
             paymentError.hint,
         }
       );
+
 
       /*
         An unexpected database / processing
@@ -408,9 +446,11 @@ export async function POST(
       );
     }
 
+
     const paymentResult =
       (rawPaymentResult ??
         {}) as PaymentResult;
+
 
     // ========================================
     // 8. Manual review case
@@ -442,6 +482,7 @@ export async function POST(
         }
       );
 
+
       return NextResponse.json(
         {
           success: true,
@@ -466,6 +507,7 @@ export async function POST(
         }
       );
     }
+
 
     // ========================================
     // 9. RPC returned an unexpected result
@@ -496,6 +538,7 @@ export async function POST(
       );
     }
 
+
     // ========================================
     // 10. Payment successfully completed
     // ========================================
@@ -521,8 +564,91 @@ export async function POST(
       }
     );
 
+
     // ========================================
-    // 11. Callback completed successfully
+    // 11. Send Order Confirmation Email
+    //
+    // IMPORTANT:
+    //
+    // Payment processing has already completed
+    // successfully.
+    //
+    // Email failure must NEVER undo payment,
+    // change stock, or change payment truth.
+    //
+    // Duplicate Billplz callbacks are safe:
+    // sendOrderConfirmationEmail() checks the
+    // database tracking field and also uses
+    // a Resend idempotency key.
+    // ========================================
+
+    let emailResult: {
+      success?: boolean;
+      skipped?: boolean;
+      reason?: string;
+      emailId?: string;
+      testMode?: boolean;
+    } | null = null;
+
+
+    try {
+      emailResult =
+        await sendOrderConfirmationEmail(
+          order.id
+        );
+
+
+      console.log(
+        "Order confirmation email result:",
+        {
+          orderId:
+            order.id,
+          success:
+            emailResult.success ??
+            false,
+          skipped:
+            emailResult.skipped ??
+            false,
+          reason:
+            emailResult.reason ??
+            null,
+          emailId:
+            emailResult.emailId ??
+            null,
+          testMode:
+            emailResult.testMode ??
+            null,
+        }
+      );
+    } catch (emailError) {
+      /*
+        Payment is already confirmed.
+
+        Email is intentionally treated as a
+        secondary notification service.
+
+        Do NOT return HTTP 500 here because an
+        email provider failure must not change
+        the successful payment outcome.
+      */
+
+      console.error(
+        "Order Confirmation Email Failed:",
+        {
+          orderId:
+            order.id,
+          billId,
+          message:
+            emailError instanceof Error
+              ? emailError.message
+              : "Unknown email error",
+        }
+      );
+    }
+
+
+    // ========================================
+    // 12. Callback completed successfully
     // ========================================
 
     return NextResponse.json({
@@ -549,12 +675,36 @@ export async function POST(
         false,
       requiresManualReview:
         false,
+
+      email: emailResult
+        ? {
+            success:
+              emailResult.success ??
+              false,
+            skipped:
+              emailResult.skipped ??
+              false,
+            reason:
+              emailResult.reason ??
+              null,
+            testMode:
+              emailResult.testMode ??
+              null,
+          }
+        : {
+            success: false,
+            skipped: false,
+            reason:
+              "EMAIL_SEND_FAILED",
+            testMode: true,
+          },
     });
   } catch (error) {
     console.error(
       "Billplz Callback Error:",
       error
     );
+
 
     return NextResponse.json(
       {
