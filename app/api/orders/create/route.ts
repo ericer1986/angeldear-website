@@ -23,6 +23,7 @@ const MALAYSIA_STATES = [
 const EAST_MALAYSIA_STATES = [
   "Sabah",
   "Sarawak",
+  "Labuan",
 ] as const;
 
 const FREE_SHIPPING_THRESHOLD = 300;

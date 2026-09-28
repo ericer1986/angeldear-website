@@ -24,6 +24,12 @@ const MALAYSIA_STATES = [
   "Putrajaya",
 ];
 
+const EAST_MALAYSIA_STATES = [
+  "Sabah",
+  "Sarawak",
+  "Labuan",
+];
+
 type CreateOrderResponse = {
   success?: boolean;
   orderId?: string;
@@ -151,8 +157,9 @@ export default function CheckoutPage() {
     );
 
   const isEastMalaysia =
-    state === "Sabah" ||
-    state === "Sarawak";
+    EAST_MALAYSIA_STATES.includes(
+      state
+    );
 
   const displayShipping =
     displaySubtotal >= 300
@@ -660,8 +667,8 @@ export default function CheckoutPage() {
               </p>
 
               <p>
-                Sabah & Sarawak shipping:
-                RM18.00
+                Sabah, Sarawak & Labuan
+                shipping: RM18.00
               </p>
 
               <p>
