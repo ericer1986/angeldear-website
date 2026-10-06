@@ -461,11 +461,8 @@ if (vercelEnvironment === "production") {
 // Use the public HTTPS Preview deployment.
 // =========================================
 
-else if (
-  vercelEnvironment === "preview" &&
-  vercelUrl
-) {
-  origin = `https://${vercelUrl}`;
+else if (vercelEnvironment === "preview") {
+  origin = requestOrigin;
 }
 
 // =========================================
@@ -485,24 +482,7 @@ const redirectUrl =
     orderId
   )}`;
 
-  console.log("BILLPLZ_URL_DIAGNOSTIC", {
-  vercelEnvironment:
-    process.env.VERCEL_ENV || null,
-
-  vercelUrl:
-    process.env.VERCEL_URL || null,
-
-  configuredSiteUrl:
-    configuredSiteUrl || null,
-
-  requestOrigin,
-
-  selectedOrigin: origin,
-
-  callbackUrl,
-
-  redirectUrl,
-});
+ 
     // =========================================
     // 15. Create Billplz Bill
     // =========================================
