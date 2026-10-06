@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
-import AdminGuard from "./AdminGuard";
 
 export const metadata: Metadata = {
-  title: "Admin",
-
+  title: "Checkout",
   robots: {
     index: false,
     follow: false,
@@ -11,14 +9,10 @@ export const metadata: Metadata = {
   },
 };
 
-export default function AdminLayout({
+export default function CheckoutLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  return (
-    <AdminGuard>
-      {children}
-    </AdminGuard>
-  );
+  return children;
 }

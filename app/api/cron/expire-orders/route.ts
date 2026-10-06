@@ -20,6 +20,8 @@ type ProcessResult = {
   orderId: string;
   action:
     | "expired"
+    | "recovered_paid"
+    | "manual_review"
     | "skipped_paid"
     | "skipped_sold"
     | "skipped_released"
@@ -63,6 +65,19 @@ async function expireReservation(
     "expire_order_reservation",
     {
       p_order_id: orderId,
+    }
+  );
+}
+
+async function recoverPaidOrder(
+  orderId: string,
+  paidAt: string
+) {
+  return supabaseAdmin.rpc(
+    "complete_paid_order",
+    {
+      p_order_id: orderId,
+      p_paid_at: paidAt,
     }
   );
 }
@@ -229,24 +244,193 @@ async function processExpiredOrder(
       billData.paid === "true";
 
     // =========================================
-    // 4. Billplz says PAID
-    //
-    // Never release stock.
-    //
-    // Callback may simply be delayed.
-    // =========================================
+// 4. Billplz says PAID
+//
+// Payment callback may have been delayed,
+// lost, or unreachable.
+//
+// Never release stock.
+//
+// Recover the payment using the same
+// atomic/idempotent RPC used by the
+// Billplz callback.
+// =========================================
 
-    if (
-      billPaid ||
-      billState === "paid"
-    ) {
-      return {
+if (
+  billPaid ||
+  billState === "paid"
+) {
+  const paidAt =
+    new Date().toISOString();
+
+  const {
+    data: recoveryResult,
+    error: recoveryError,
+  } = await recoverPaidOrder(
+    order.id,
+    paidAt
+  );
+
+  if (recoveryError) {
+    console.error(
+      "Cron Paid Recovery RPC Error:",
+      {
         orderId: order.id,
-        action: "skipped_paid",
-        reason:
-          "BILL_ALREADY_PAID",
-      };
+        billId:
+          order.billplz_bill_id,
+        message:
+          recoveryError.message,
+      }
+    );
+
+    return {
+      orderId: order.id,
+      action: "error",
+      reason:
+        "PAID_RECOVERY_FAILED",
+    };
+  }
+
+  /*
+   * complete_paid_order() may return
+   * a JSON object or an array depending
+   * on the PostgreSQL function shape.
+   *
+   * Normalize it before reading the
+   * recovery result.
+   */
+  const normalizedResult =
+    Array.isArray(recoveryResult)
+      ? recoveryResult[0]
+      : recoveryResult;
+
+  const recovery =
+    normalizedResult &&
+    typeof normalizedResult === "object"
+      ? (normalizedResult as Record<
+          string,
+          unknown
+        >)
+      : null;
+
+  /*
+   * The payment RPC is the source of truth.
+   *
+   * Reload the order after the RPC instead
+   * of assuming payment/stock state from
+   * the Billplz response alone.
+   */
+  const {
+    data: recoveredOrder,
+    error: reloadError,
+  } = await supabaseAdmin
+    .from("orders")
+    .select(`
+      id,
+      payment_status,
+      payment_exception,
+      stock_deducted_at
+    `)
+    .eq("id", order.id)
+    .maybeSingle();
+
+  if (
+    reloadError ||
+    !recoveredOrder
+  ) {
+    console.error(
+      "Cron Paid Recovery Reload Error:",
+      {
+        orderId: order.id,
+        error: reloadError,
+      }
+    );
+
+    return {
+      orderId: order.id,
+      action: "error",
+      reason:
+        "PAID_RECOVERY_RELOAD_FAILED",
+    };
+  }
+
+  /*
+   * Payment received but inventory could
+   * not safely be secured.
+   *
+   * complete_paid_order() should place
+   * the order into payment_exception /
+   * manual review instead of allowing
+   * fulfillment.
+   */
+  if (
+    recoveredOrder.payment_exception
+  ) {
+    console.warn(
+      "Cron Paid Recovery Requires Manual Review:",
+      {
+        orderId: order.id,
+        billId:
+          order.billplz_bill_id,
+        paymentException:
+          recoveredOrder.payment_exception,
+        rpcResult: recovery,
+      }
+    );
+
+    return {
+      orderId: order.id,
+      action: "manual_review",
+      reason:
+        "PAYMENT_RECOVERED_REQUIRES_MANUAL_REVIEW",
+    };
+  }
+
+  /*
+   * Normal successful recovery must leave
+   * the order paid with stock secured.
+   */
+  if (
+    recoveredOrder.payment_status !==
+      "paid" ||
+    !recoveredOrder.stock_deducted_at
+  ) {
+    console.error(
+      "Cron Paid Recovery Incomplete:",
+      {
+        orderId: order.id,
+        paymentStatus:
+          recoveredOrder.payment_status,
+        stockDeductedAt:
+          recoveredOrder.stock_deducted_at,
+        rpcResult: recovery,
+      }
+    );
+
+    return {
+      orderId: order.id,
+      action: "error",
+      reason:
+        "PAID_RECOVERY_INCOMPLETE",
+    };
+  }
+
+  console.log(
+    "Cron Paid Order Recovered:",
+    {
+      orderId: order.id,
+      billId:
+        order.billplz_bill_id,
     }
+  );
+
+  return {
+    orderId: order.id,
+    action: "recovered_paid",
+    reason:
+      "BILL_PAID_RECOVERED",
+  };
+}
 
     // =========================================
     // 5. Bill already deleted
@@ -660,56 +844,86 @@ export async function GET(
     // 7. Summary
     // =========================================
 
-    const expiredCount =
-      results.filter(
-        (result) =>
-          result.action ===
-          "expired"
-      ).length;
+   const expiredCount =
+  results.filter(
+    (result) =>
+      result.action ===
+      "expired"
+  ).length;
 
-    const errorCount =
-      results.filter(
-        (result) =>
-          result.action ===
-          "error"
-      ).length;
+const recoveredCount =
+  results.filter(
+    (result) =>
+      result.action ===
+      "recovered_paid"
+  ).length;
 
-    const skippedCount =
-      results.length -
-      expiredCount -
-      errorCount;
+const manualReviewCount =
+  results.filter(
+    (result) =>
+      result.action ===
+      "manual_review"
+  ).length;
 
-    console.log(
-      "Expired Reservation Cron Completed:",
-      {
-        checked:
-          results.length,
-        expired:
-          expiredCount,
-        skipped:
-          skippedCount,
-        errors:
-          errorCount,
-        gracePeriodMinutes:
-          GRACE_PERIOD_MINUTES,
-      }
-    );
+const errorCount =
+  results.filter(
+    (result) =>
+      result.action ===
+      "error"
+  ).length;
+
+const skippedCount =
+  results.filter(
+    (result) =>
+      result.action ===
+        "skipped_paid" ||
+      result.action ===
+        "skipped_sold" ||
+      result.action ===
+        "skipped_released" ||
+      result.action ===
+        "skipped_not_due"
+  ).length;
+
+   console.log(
+  "Expired Reservation Cron Completed:",
+  {
+    checked:
+      results.length,
+    expired:
+      expiredCount,
+    recovered:
+      recoveredCount,
+    manualReview:
+      manualReviewCount,
+    skipped:
+      skippedCount,
+    errors:
+      errorCount,
+    gracePeriodMinutes:
+      GRACE_PERIOD_MINUTES,
+  }
+);
 
     return NextResponse.json({
-      success:
-        errorCount === 0,
-      checked:
-        results.length,
-      expired:
-        expiredCount,
-      skipped:
-        skippedCount,
-      errors:
-        errorCount,
-      gracePeriodMinutes:
-        GRACE_PERIOD_MINUTES,
-      results,
-    });
+  success:
+    errorCount === 0,
+  checked:
+    results.length,
+  expired:
+    expiredCount,
+  recovered:
+    recoveredCount,
+  manualReview:
+    manualReviewCount,
+  skipped:
+    skippedCount,
+  errors:
+    errorCount,
+  gracePeriodMinutes:
+    GRACE_PERIOD_MINUTES,
+  results,
+});
   } catch (error) {
     console.error(
       "Expire Orders Cron Error:",

@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+
 import { useCart } from "@/context/CartContext";
 
 export default function CartPage() {
@@ -13,14 +14,16 @@ export default function CartPage() {
 
   const subtotal = items.reduce(
     (total, item) =>
-      total + Number(item.product.price) * item.quantity,
+      total +
+      Number(item.product.price) *
+        item.quantity,
     0
   );
 
   if (items.length === 0) {
     return (
-      <section className="max-w-7xl mx-auto px-6 py-20">
-        <h1 className="text-4xl font-bold text-[#38435A]">
+      <main className="mx-auto max-w-7xl px-5 py-16 md:px-6 md:py-20">
+        <h1 className="text-3xl font-bold text-[#38435A] md:text-4xl">
           Shopping Cart
         </h1>
 
@@ -30,118 +33,160 @@ export default function CartPage() {
 
         <Link
           href="/shop"
-          className="inline-block mt-8 rounded-full bg-[#E8C9C1] px-8 py-3 font-semibold hover:bg-[#DDB8AE] transition"
+          className="mt-8 inline-flex rounded-full bg-[#E8C9C1] px-8 py-3 font-semibold transition hover:bg-[#DDB8AE]"
         >
           Continue Shopping
         </Link>
-      </section>
+      </main>
     );
   }
 
   return (
-    <section className="max-w-7xl mx-auto px-6 py-20">
-      <h1 className="text-4xl font-bold text-[#38435A] mb-10">
+    <main className="mx-auto max-w-7xl px-5 py-14 md:px-6 md:py-20">
+      <h1 className="mb-10 text-3xl font-bold text-[#38435A] md:text-4xl">
         Shopping Cart
       </h1>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
-
+      <div className="grid grid-cols-1 gap-10 lg:grid-cols-3">
         {/* Cart Items */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="space-y-6 lg:col-span-2">
+          {items.map((item) => {
+            const stock = Math.max(
+              0,
+              Number(item.product.stock) || 0
+            );
 
-          {items.map((item) => (
-            <div
-              key={item.product.id}
-              className="flex gap-6 bg-white rounded-3xl shadow-sm p-5"
-            >
+            const atStockLimit =
+              item.quantity >= stock;
 
-              {/* Image */}
-              <div className="relative w-32 h-32 rounded-2xl overflow-hidden bg-gray-100 shrink-0">
-                <Image
-                  src={item.product.image}
-                  alt={item.product.name}
-                  fill
-                  className="object-cover"
-                />
-              </div>
+            const itemTotal =
+              Number(item.product.price) *
+              item.quantity;
 
-              {/* Product Info */}
-              <div className="flex-1">
-
-                <h2 className="text-xl font-semibold text-[#38435A]">
-                  {item.product.name}
-                </h2>
-
-                <p className="mt-2 text-[#AFC7B4] font-bold">
-                  RM {Number(item.product.price).toFixed(2)}
-                </p>
-
-                {/* Quantity */}
-                <div className="mt-5 flex items-center gap-4">
-
-                  <button
-                    onClick={() =>
-                      updateQuantity(
-                        item.product.id,
-                        item.quantity - 1
-                      )
-                    }
-                    className="w-9 h-9 rounded-full bg-gray-100"
+            return (
+              <article
+                key={item.product.id}
+                className="rounded-3xl bg-white p-5 shadow-sm"
+              >
+                <div className="flex gap-4 sm:gap-6">
+                  {/* Image */}
+                  <Link
+                    href={`/product/${item.product.slug}`}
+                    className="relative h-28 w-28 shrink-0 overflow-hidden rounded-2xl bg-gray-100 sm:h-32 sm:w-32"
                   >
-                    −
-                  </button>
+                    <Image
+                      src={item.product.image}
+                      alt={item.product.name}
+                      fill
+                      sizes="128px"
+                      className="object-cover"
+                    />
+                  </Link>
 
-                  <span className="font-semibold">
-                    {item.quantity}
-                  </span>
+                  {/* Product Information */}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <Link
+                          href={`/product/${item.product.slug}`}
+                          className="text-lg font-semibold leading-6 text-[#38435A] hover:underline sm:text-xl"
+                        >
+                          {item.product.name}
+                        </Link>
 
-                  <button
-                    onClick={() =>
-                      updateQuantity(
-                        item.product.id,
-                        item.quantity + 1
-                      )
-                    }
-                    className="w-9 h-9 rounded-full bg-gray-100"
-                  >
-                    +
-                  </button>
+                        <p className="mt-2 font-bold text-[#AFC7B4]">
+                          RM{" "}
+                          {Number(
+                            item.product.price
+                          ).toFixed(2)}
+                        </p>
+                      </div>
 
+                      <p className="shrink-0 text-right font-bold text-[#38435A]">
+                        RM {itemTotal.toFixed(2)}
+                      </p>
+                    </div>
+
+                    {/* Quantity */}
+                    <div className="mt-5 flex items-center gap-3">
+                      <button
+                        type="button"
+                        aria-label={`Decrease quantity of ${item.product.name}`}
+                        onClick={() =>
+                          updateQuantity(
+                            item.product.id,
+                            item.quantity - 1
+                          )
+                        }
+                        className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 transition hover:bg-gray-200"
+                      >
+                        −
+                      </button>
+
+                      <span className="min-w-6 text-center font-semibold">
+                        {item.quantity}
+                      </span>
+
+                      <button
+                        type="button"
+                        aria-label={`Increase quantity of ${item.product.name}`}
+                        disabled={
+                          stock <= 0 ||
+                          atStockLimit
+                        }
+                        onClick={() =>
+                          updateQuantity(
+                            item.product.id,
+                            item.quantity + 1
+                          )
+                        }
+                        className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 transition hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-gray-100"
+                      >
+                        +
+                      </button>
+                    </div>
+
+                    {atStockLimit &&
+                      stock > 0 && (
+                        <p className="mt-2 text-xs text-gray-500">
+                          Maximum available
+                          quantity reached.
+                        </p>
+                      )}
+
+                    {stock <= 0 && (
+                      <p className="mt-2 text-xs font-medium text-red-600">
+                        This product is
+                        currently out of
+                        stock.
+                      </p>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        removeFromCart(
+                          item.product.id
+                        )
+                      }
+                      className="mt-4 text-sm text-red-500 transition hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </div>
                 </div>
-
-                <button
-                  onClick={() =>
-                    removeFromCart(item.product.id)
-                  }
-                  className="mt-4 text-sm text-red-500 hover:underline"
-                >
-                  Remove
-                </button>
-
-              </div>
-
-              {/* Item Total */}
-              <div className="font-bold text-[#38435A]">
-                RM{" "}
-                {(
-                  Number(item.product.price) *
-                  item.quantity
-                ).toFixed(2)}
-              </div>
-
-            </div>
-          ))}
-
+              </article>
+            );
+          })}
         </div>
 
-        {/* Summary */}
-        <div className="bg-gray-50 rounded-3xl p-8 h-fit">
-
+        {/* Order Summary */}
+        <aside className="h-fit rounded-3xl bg-gray-50 p-6 sm:p-8">
           <h2 className="text-2xl font-bold text-[#38435A]">
             Order Summary
           </h2>
 
-          <div className="flex justify-between mt-8">
+          <div className="mt-8 flex justify-between gap-4">
             <span className="text-gray-500">
               Subtotal
             </span>
@@ -151,9 +196,14 @@ export default function CartPage() {
             </span>
           </div>
 
-          <div className="border-t my-6" />
+          <p className="mt-3 text-sm leading-6 text-gray-500">
+            Shipping will be calculated
+            during checkout.
+          </p>
 
-          <div className="flex justify-between text-xl font-bold">
+          <div className="my-6 border-t" />
+
+          <div className="flex justify-between gap-4 text-xl font-bold">
             <span>Total</span>
 
             <span className="text-[#AFC7B4]">
@@ -163,14 +213,12 @@ export default function CartPage() {
 
           <Link
             href="/checkout"
-            className="block text-center mt-8 rounded-full bg-[#E8C9C1] py-4 font-semibold hover:bg-[#DDB8AE] transition"
+            className="mt-8 block rounded-full bg-[#E8C9C1] py-4 text-center font-semibold transition hover:bg-[#DDB8AE]"
           >
             Proceed to Checkout
           </Link>
-
-        </div>
-
+        </aside>
       </div>
-    </section>
+    </main>
   );
 }

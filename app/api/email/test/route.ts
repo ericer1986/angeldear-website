@@ -3,13 +3,39 @@ import { Resend } from "resend";
 
 export async function GET() {
   try {
-    const apiKey = process.env.RESEND_API_KEY;
+    // =========================================
+    // Development-only endpoint
+    //
+    // Never allow this route to send email
+    // in production.
+    // =========================================
+
+    if (process.env.NODE_ENV === "production") {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "This test endpoint is disabled in production.",
+        },
+        {
+          status: 403,
+        }
+      );
+    }
+
+    // =========================================
+    // Resend configuration
+    // =========================================
+
+    const apiKey =
+      process.env.RESEND_API_KEY;
 
     if (!apiKey) {
       return NextResponse.json(
         {
           success: false,
-          error: "RESEND_API_KEY is missing.",
+          error:
+            "RESEND_API_KEY is missing.",
         },
         {
           status: 500,
@@ -17,13 +43,22 @@ export async function GET() {
       );
     }
 
-    const resend = new Resend(apiKey);
+    const resend =
+      new Resend(apiKey);
+
+    // =========================================
+    // Send development test email
+    // =========================================
 
     const { data, error } =
       await resend.emails.send({
-        from: "Angel Dear Malaysia <onboarding@resend.dev>",
-        to: ["delivered@resend.dev"],
-        subject: "Angel Dear Email Test",
+        from:
+          "Angel Dear Malaysia <onboarding@resend.dev>",
+        to: [
+          "delivered@resend.dev",
+        ],
+        subject:
+          "Angel Dear Email Test",
         html: `
           <div
             style="
@@ -80,7 +115,8 @@ export async function GET() {
       return NextResponse.json(
         {
           success: false,
-          error: error.message,
+          error:
+            error.message,
         },
         {
           status: 500,
@@ -90,8 +126,10 @@ export async function GET() {
 
     return NextResponse.json({
       success: true,
-      message: "Test email sent successfully.",
-      emailId: data?.id ?? null,
+      message:
+        "Test email sent successfully.",
+      emailId:
+        data?.id ?? null,
     });
   } catch (error) {
     console.error(

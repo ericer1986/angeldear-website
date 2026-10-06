@@ -1,3 +1,33 @@
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Our Brands",
+
+  description:
+    "Discover baby and family brands available at Angel Dear Malaysia, with carefully selected products for comfort, convenience and everyday family life.",
+
+  alternates: {
+    canonical: "/brands",
+  },
+
+  openGraph: {
+    title: "Our Brands | Angel Dear Malaysia",
+    description:
+      "Discover baby and family brands available at Angel Dear Malaysia, with carefully selected products for comfort, convenience and everyday family life.",
+    url: "/brands",
+    type: "website",
+    locale: "en_MY",
+    siteName: "Angel Dear Malaysia",
+  },
+
+  twitter: {
+    card: "summary_large_image",
+    title: "Our Brands | Angel Dear Malaysia",
+    description:
+      "Discover baby and family brands available at Angel Dear Malaysia, with carefully selected products for comfort, convenience and everyday family life.",
+  },
+};
+
 export default function BrandsPage() {
   return (
     <main className="min-h-screen bg-white">

@@ -409,22 +409,81 @@ export async function POST(request: Request) {
       );
 
     // =========================================
-    // 14. Build callback + redirect URLs
-    // =========================================
+// 14. Build callback + redirect URLs
+// =========================================
 
-    const requestUrl =
-      new URL(request.url);
+const requestUrl =
+  new URL(request.url);
 
-    const origin =
-      requestUrl.origin;
+const requestOrigin =
+  requestUrl.origin;
 
-    const callbackUrl =
-      `${origin}/api/billplz/callback`;
+const configuredSiteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL
+    ?.trim()
+    .replace(/\/+$/, "");
 
-    const redirectUrl =
-      `${origin}/order-success?order=${encodeURIComponent(
-        orderId
-      )}`;
+const vercelEnvironment =
+  process.env.VERCEL_ENV;
+
+const vercelUrl =
+  process.env.VERCEL_URL?.trim();
+
+let origin: string;
+
+// =========================================
+// Production
+// Always use the official configured domain.
+// =========================================
+
+if (vercelEnvironment === "production") {
+  if (!configuredSiteUrl) {
+    console.error(
+      "NEXT_PUBLIC_SITE_URL is missing in production"
+    );
+
+    return NextResponse.json(
+      {
+        error:
+          "Production site URL configuration is missing",
+      },
+      {
+        status: 500,
+      }
+    );
+  }
+
+  origin = configuredSiteUrl;
+}
+
+// =========================================
+// Vercel Preview
+// Use the public HTTPS Preview deployment.
+// =========================================
+
+else if (
+  vercelEnvironment === "preview" &&
+  vercelUrl
+) {
+  origin = `https://${vercelUrl}`;
+}
+
+// =========================================
+// Local Development
+// Use localhost / current request origin.
+// =========================================
+
+else {
+  origin = requestOrigin;
+}
+
+const callbackUrl =
+  `${origin}/api/billplz/callback`;
+
+const redirectUrl =
+  `${origin}/order-success?order=${encodeURIComponent(
+    orderId
+  )}`;
 
     // =========================================
     // 15. Create Billplz Bill
@@ -559,43 +618,79 @@ export async function POST(request: Request) {
     // =========================================
 
     const {
-      error: saveBillError,
-    } =
-      await supabaseAdmin
-        .from("orders")
-        .update({
-          billplz_bill_id:
-            billData.id,
-        })
-        .eq(
-          "id",
-          orderId
-        )
-        .eq(
-          "user_id",
-          currentUser.id
-        )
-        .is(
-          "billplz_bill_id",
-          null
-        );
+  data: linkedOrder,
+  error: saveBillError,
+} =
+  await supabaseAdmin
+    .from("orders")
+    .update({
+      billplz_bill_id:
+        billData.id,
+    })
+    .eq(
+      "id",
+      orderId
+    )
+    .eq(
+      "user_id",
+      currentUser.id
+    )
+    .is(
+      "billplz_bill_id",
+      null
+    )
+    .select(`
+      id,
+      billplz_bill_id
+    `)
+    .maybeSingle();
 
-    if (saveBillError) {
-      console.error(
-        "Save Billplz Bill ID Error:",
-        saveBillError
-      );
-
-      return NextResponse.json(
-        {
-          error:
-            "Payment bill was created but could not be linked to the order",
-        },
-        {
-          status: 500,
-        }
-      );
+if (saveBillError) {
+  console.error(
+    "Save Billplz Bill ID Error:",
+    {
+      orderId,
+      billId: billData.id,
+      message: saveBillError.message,
     }
+  );
+
+  return NextResponse.json(
+    {
+      error:
+        "Payment bill was created but could not be linked to the order",
+    },
+    {
+      status: 500,
+    }
+  );
+}
+
+if (
+  !linkedOrder ||
+  linkedOrder.billplz_bill_id !==
+    billData.id
+) {
+  console.error(
+    "Billplz Bill Link Race Detected:",
+    {
+      orderId,
+      billId: billData.id,
+    }
+  );
+
+  return NextResponse.json(
+    {
+      error:
+        "The payment bill could not be safely linked to this order. Please refresh the order before trying again.",
+      reason:
+        "BILL_LINK_CONFLICT",
+    },
+    {
+      status: 409,
+    }
+  );
+}
 
     // =========================================
     // 18. Return payment URL to Checkout

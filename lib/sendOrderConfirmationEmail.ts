@@ -2,12 +2,16 @@
 import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-const TEST_MODE = true;
+const EMAIL_TEST_MODE =
+  process.env.EMAIL_TEST_MODE !== "false";
 
 const EMAIL_FROM =
+  process.env.EMAIL_FROM?.trim() ||
   "Angel Dear Malaysia <onboarding@resend.dev>";
 
-const TEST_EMAIL = "delivered@resend.dev";
+const TEST_EMAIL =
+  process.env.EMAIL_TEST_RECIPIENT?.trim() ||
+  "delivered@resend.dev";
 
 type Order = {
   id: string;
@@ -369,9 +373,9 @@ export async function sendOrderConfirmationEmail(
         from: EMAIL_FROM,
 
         to: [
-          TEST_MODE
-            ? TEST_EMAIL
-            : typedOrder.email,
+          EMAIL_TEST_MODE
+  ? TEST_EMAIL
+  : typedOrder.email
         ],
 
         subject:
@@ -442,6 +446,6 @@ export async function sendOrderConfirmationEmail(
     success: true,
     skipped: false,
     emailId: data.id,
-    testMode: TEST_MODE,
+    testMode: EMAIL_TEST_MODE,
   };
 }

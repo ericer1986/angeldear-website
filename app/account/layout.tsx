@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
-import AdminGuard from "./AdminGuard";
 
 export const metadata: Metadata = {
-  title: "Admin",
+  title: "My Account",
 
   robots: {
     index: false,
@@ -11,14 +10,10 @@ export const metadata: Metadata = {
   },
 };
 
-export default function AdminLayout({
+export default function AccountLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  return (
-    <AdminGuard>
-      {children}
-    </AdminGuard>
-  );
+  return children;
 }

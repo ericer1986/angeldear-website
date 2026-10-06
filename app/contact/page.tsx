@@ -1,10 +1,40 @@
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Contact Us",
+
+  description:
+    "Contact Angel Dear Malaysia for product enquiries, order support and general assistance with your baby and family essentials.",
+
+  alternates: {
+    canonical: "/contact",
+  },
+
+  openGraph: {
+    title: "Contact Us | Angel Dear Malaysia",
+    description:
+      "Contact Angel Dear Malaysia for product enquiries, order support and general assistance with your baby and family essentials.",
+    url: "/contact",
+    type: "website",
+    locale: "en_MY",
+    siteName: "Angel Dear Malaysia",
+  },
+
+  twitter: {
+    card: "summary_large_image",
+    title: "Contact Us | Angel Dear Malaysia",
+    description:
+      "Contact Angel Dear Malaysia for product enquiries, order support and general assistance with your baby and family essentials.",
+  },
+};
+
 export default function ContactPage() {
   return (
     <main className="min-h-screen bg-white">
       <section className="mx-auto max-w-4xl px-6 py-16">
         <div className="text-center">
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-gray-500">
-            Angel Dear
+            Angel Dear Malaysia
           </p>
 
           <h1 className="mt-3 text-4xl font-bold text-gray-900">
